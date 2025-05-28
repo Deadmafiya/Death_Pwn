@@ -139,7 +139,7 @@ def disclaim():
     typewriter.cyan_bright("Death Pwn", dealay=0.15)
     typewriter.magenta_bright("   -Made with ♥", dealay=0.15)
     typewriter.green("   -By Dead Mafia", dealay=0.07)
-    typewriter.yellow("\n\n\n\n   for the solution of any problem please visit my github", dealay=0.05)
+    typewriter.yellow("\n\n\n\n   for the solution of any problem kindly visit my github -https://github.com/Deadmafiya/Death_Pwn/", dealay=0.05)
     typewriter.blue("\n", dealay=0.01)
     delay(0.5)
     clrscr()
