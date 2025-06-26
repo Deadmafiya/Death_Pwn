@@ -1,150 +1,99 @@
-import re
 from basics import *
 from mdk4 import *
 
-def func_list():
-    logo("Functions")
-    typewriter.all_color([
-        ("Beacon Flooding", "bold bright_cyan"),
-        ("\nWi-Fi Deauther", "bold bright_cyan"),
-        ("\nOthers are Comming soon", "bold bright_cyan"),
-        ("\n            till you can buy me a coffee ♥ for my motivation-\n\n\n\n", "magenta")
-    ], dealay=0.01)
+def welcome():
+    clrscr()
+    banner()
+    print("\n\n")
+    typewriter.blue("Welcome To Death_Pwn")
+    typewriter.all_color([("            -Made By 'Hack With Tarang' With ", "bright_cyan"), ("♥", "bright_magenta")], dealay=0.02)
+    typewriter.yellow("\n\n\nFor Solving any problems visit- https://t.me/+2kuYPW5ETw8zMjNl", dealay=0.02)
+    delay(2)
+    clrscr()
 
-def command_handler(command):
-    command = command.lower()
-    num = None
-    mdk = None
-    try:
-        if "beacon" in command and "flooding" in command:
-            num = 1
-            for word in beacon_dict:
-                match = re.search(rf"(\d+)\s*{word}", command)
-                if match:
-                    packet = match.group(1)
-                    mdk = mdk4(interface=int_face, mode="b", count=packet)
-                    break
 
-            else:
-                new_page()
-                typewriter.yellow("For starting beacon flooding give numbers of pakets ")
-                packet = Prompt.ask("#~ ")
-                while not packet.isdigit() or int(packet) <= 0:
-                    typewriter.red_bright("Invalid packet count! Must be a positive integer")
-                    packet = Prompt.ask("#~ ").lower()
-                    return
-                mdk = mdk4(interface=int_face, mode="b", count=packet)
-                num = 1
-            
-        elif "deauth" in command:
-            num = 2
-            # Improved regex to handle various command formats
-            mac_match = re.search(
-                r"(?:for\s+)?([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})", 
-                command
-            )
-            
-            if mac_match:
-                mac = mac_match.group(1)
-            else:
-                while True:
-                    mac = Prompt.ask("[bold bright_green]For starting Deauther, enter target MAC (e.g., 00:11:22:33:44:55)#~ [/bold bright_green]")
-                    
-                    # Validate MAC format
-                    if re.match(r"^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$", mac):
-                        break
-                    else:
-                        typewriter.red_bright("Invalid MAC format! Please use 00:11:22:33:44:55 or 00-11-22-33-44-55")
-            
-            mdk = mdk4(interface=int_face, mode="d", bssid=mac)
-            
-
-        else:
-            typewriter.red_bright("command not recognized!")
-            
-    except Exception as e:
-        print("error occure in command_handler: ", e)
+def query_filter(query):
     
-    try:
-        if num == 1:
-            mdk.beacon_flooding()
+    if "jam" in query:
+        try:
+            mdk4(interface=int_face, mode="d").Jammer()
+        except KeyboardInterrupt:
+            intercept("Jammer")
+        except Exception as e:
+            typewriter.red_bright("There is Error in jammer in query filter,")
+            print(e)
+            delay(2)
 
-        elif num == 2:
-            mdk.Deauther()
+    elif any(keyword in query for keyword in beacon_dict):
+        try:
+            mdk4(interface=int_face, mode="b").Beacon_Flooding()
+        except KeyboardInterrupt:
+            intercept("Beacon Flooding")
+        except Exception as e:
+            typewriter.red_bright("There is Error in beacon flooding in query filter,")
+            print(e)
+            delay(2)
 
-        elif num == 3:
-            pass
-        elif num == 4:
-            pass
-        elif num == 5:
-            pass
-        elif num == 6:
-            pass
-        elif num == 7:
-            pass
-        elif num == 8:
-            pass
-        elif num == 9:
-            pass
+    elif "scan" in query:
+        try:
+            airmon_scan(interface=int_face)
+        except Exception as e:
+            typewriter.red_bright("There is Error in beacon flooding in query filter,")
+            print(e)
+            delay(2)
+        except KeyboardInterrupt:
+            intercept("Wi-fi scan")
 
-    except Exception as e:
-        print("error occure in command_handler number section: ", e)
-    
-    
-
-
-def rootme():
-    def group_func():
-        clrscr()
-        banner()
-        delay(0.5)
-        func_list()
-        delay(0.5)
-        while True:
-            command_from_user = Prompt.ask(input_text).lower()
-            if command_from_user in ["0", "exit", "bye", "/bye"]:
-                mode.ma()
-                typewriter.red_bright("EXITING...")
-                typewriter.red("stay stealthy!")
-                break  # Exit loop
-            command_handler(command_from_user)
-            completed()
-            banner()
-            func_list()
-            return command_from_user
-            
-
-    if os.geteuid() !=0:
-        typewriter.red_bright("Run Script as ROOT!")
-        typewriter.red("Use 'sudo' command")
-        typewriter.yellow("\n\nCorrect command#~ sudo python3 Death_Pwn.py")
+    elif ("help" or "-h") in query:
+        typewriter.green("You can do jamming.               ♥ makes all wi-fi down", dealay=0.01)
+        typewriter.green("You can do beacon flooding.       ♥ makes bunch of fake wi-fi", dealay=0.01)
+        typewriter.green("You can scan networks around you. ♥ scans networks around you and save for later\n\n\n", dealay=0.01)
+        typewriter.yellow("Other features are under developtment")
+        typewriter.yellow_bright(enter)
         input()
 
     else:
-        try:
-            mode.mo()
-            try:
-                disclaim()
-            except KeyboardInterrupt:
-                clrscr()
-            group_func()
-        except KeyboardInterrupt:
-            mode.ma()
-            typewriter.red_bright("EXITING...")
-            typewriter.red("stay stealthy!")
-            delay(0.5)
+        typewriter.yellow_bright("Not recognized query!")
+        typewriter.red(enter)
+        input()
 
-def disclaim():
-    clrscr()
-    typewriter.cyan_bright("Death Pwn", dealay=0.15)
-    typewriter.magenta_bright("   -Made with ♥", dealay=0.15)
-    typewriter.green("   -By Dead Mafia", dealay=0.07)
-    typewriter.yellow("\n\n\n\n   for the solution of any problem kindly visit my github -https://github.com/Deadmafiya/Death_Pwn/", dealay=0.05)
-    typewriter.blue("\n", dealay=0.01)
-    delay(0.5)
-    clrscr()
+
+
+def main():
+
+    try:
+        while True:
+            new_page()
+            user_query = u_input().lower()
+            
+            if "exit" in user_query or "quit" in user_query:
+                raise KeyboardInterrupt
+                
+            query_filter(user_query)
+            
+    except KeyboardInterrupt:
+        typewriter.yellow_bright("\nExiting...")
+        mode.ma()
+        clrscr()
+        sys.exit(0)
+
 
 
 if __name__ == "__main__":
-    rootme()
-    clrscr()
+    if is_sudo():
+        try:
+            mode.mo()
+            welcome()
+            main()
+        except KeyboardInterrupt:
+            mode.ma()
+            clrscr()
+            sys.exit(0)
+        except Exception as e:
+            typewriter.red_bright(f"Fatal error: ")
+            print(e)
+            input()
+            mode.ma()
+            sys.exit(1)
+    else:
+        typewriter.red_bright("Run this script as sudo!")
