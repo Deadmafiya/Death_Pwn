@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod failover;
 pub mod openai;
 
 pub use ai::{AiProvider, ChatRequest, ProviderError};
