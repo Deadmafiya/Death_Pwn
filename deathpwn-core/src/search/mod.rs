@@ -2,6 +2,10 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 
+pub mod ddg;
+
+pub use ddg::{parse_ddg_html, DuckDuckGoSearch};
+
 /// A single web search result. Consumed by Stage 2 (`Retrieve`) to build the
 /// knowledge-retrieval prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
