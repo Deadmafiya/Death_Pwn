@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod schema;
 
 pub use config::{Config, ProviderConfig};
 pub use error::{DeathpwnError, Result};
