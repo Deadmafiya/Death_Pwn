@@ -52,6 +52,46 @@ pub struct PlannedCommand {
     pub depends_on_prev: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stage4Render {
+    pub sections: Vec<RenderSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderSection {
+    pub title: String,
+    pub kind: SectionKind,
+    pub body: RenderBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionKind {
+    Table,
+    KeyValue,
+    Text,
+    Findings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderBody {
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    KeyValue(Vec<(String, String)>),
+    Text(String),
+    Findings(Vec<FindingItem>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FindingItem {
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +209,66 @@ mod tests {
         // No `depends_on_prev` — must fail to parse.
         let bad = r#"{ "tool": "nmap", "argv": [], "purpose": "x" }"#;
         assert!(serde_json::from_str::<PlannedCommand>(bad).is_err());
+    }
+
+    #[test]
+    fn render_body_variants_round_trip() {
+        let bodies = vec![
+            RenderBody::Table {
+                headers: vec!["port".to_string(), "state".to_string()],
+                rows: vec![vec!["22".to_string(), "open".to_string()]],
+            },
+            RenderBody::KeyValue(vec![("os".to_string(), "linux".to_string())]),
+            RenderBody::Text("raw output".to_string()),
+            RenderBody::Findings(vec![FindingItem {
+                severity: "high".to_string(),
+                title: "anon ftp".to_string(),
+                detail: "ftp allows anonymous login".to_string(),
+            }]),
+        ];
+        for body in bodies {
+            let json = serde_json::to_string(&body).unwrap();
+            let back: RenderBody = serde_json::from_str(&json).unwrap();
+            assert_eq!(body, back);
+        }
+    }
+
+    #[test]
+    fn render_body_table_uses_external_snake_case_tag() {
+        let body = RenderBody::Table {
+            headers: vec!["h".to_string()],
+            rows: vec![vec!["r".to_string()]],
+        };
+        let json = serde_json::to_string(&body).unwrap();
+        assert_eq!(json, r#"{"table":{"headers":["h"],"rows":[["r"]]}}"#);
+    }
+
+    #[test]
+    fn section_kind_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&SectionKind::KeyValue).unwrap(),
+            "\"key_value\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SectionKind::Findings).unwrap(),
+            "\"findings\""
+        );
+    }
+
+    #[test]
+    fn stage4_render_round_trips() {
+        let original = Stage4Render {
+            sections: vec![RenderSection {
+                title: "Open Ports".to_string(),
+                kind: SectionKind::Table,
+                body: RenderBody::Table {
+                    headers: vec!["port".to_string(), "state".to_string()],
+                    rows: vec![vec!["22".to_string(), "open".to_string()]],
+                },
+            }],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let back: Stage4Render = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, back);
     }
 }
