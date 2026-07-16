@@ -7,6 +7,9 @@ pub mod cancel;
 pub mod clock;
 pub mod config;
 pub mod error;
+pub mod exec;
+
+pub use exec::{CommandRunner, CommandSpec, OutputLine, RunOutcome, Stream};
 pub mod providers;
 pub mod schema;
 pub mod search;
