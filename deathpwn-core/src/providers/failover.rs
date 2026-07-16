@@ -21,35 +21,34 @@ impl FailoverClient {
     where
         F: Fn(&str) -> std::result::Result<T, String>,
     {
-        // Provider A.
-        let label_a = self.a.label().to_string();
-        let start_a = self.clock.now_ms();
-        match self.a.complete(req).await {
-            Ok(content) => {
-                let latency_ms = self.clock.now_ms().saturating_sub(start_a);
-                tracing::info!(provider = %label_a, latency_ms, outcome = "ok", "provider call succeeded");
-                return validate(&content).map_err(|e| {
-                    DeathpwnError::Provider(format!("{label_a}: validation failed: {e}"))
-                });
-            }
-            Err(e) => {
-                let latency_ms = self.clock.now_ms().saturating_sub(start_a);
-                tracing::warn!(provider = %label_a, latency_ms, outcome = "error", error = ?e, "provider call failed");
+        let mut last_error = String::from("no providers configured");
+
+        for provider in [&self.a, &self.b] {
+            let label = provider.label().to_string();
+            let start = self.clock.now_ms();
+            match provider.complete(req).await {
+                Ok(content) => {
+                    let latency_ms = self.clock.now_ms().saturating_sub(start);
+                    match validate(&content) {
+                        Ok(value) => {
+                            tracing::info!(provider = %label, latency_ms, outcome = "ok", "provider call succeeded");
+                            return Ok(value);
+                        }
+                        Err(verr) => {
+                            tracing::warn!(provider = %label, latency_ms, outcome = "validation_failed", error = %verr, "provider response failed validation");
+                            last_error = format!("{label}: validation failed: {verr}");
+                        }
+                    }
+                }
+                Err(perr) => {
+                    let latency_ms = self.clock.now_ms().saturating_sub(start);
+                    tracing::warn!(provider = %label, latency_ms, outcome = "error", error = ?perr, "provider call failed");
+                    last_error = format!("{label}: provider error: {perr:?}");
+                }
             }
         }
 
-        // Provider B.
-        let label_b = self.b.label().to_string();
-        let start_b = self.clock.now_ms();
-        let content = self
-            .b
-            .complete(req)
-            .await
-            .map_err(|e| DeathpwnError::Provider(format!("{label_b}: provider error: {e:?}")))?;
-        let latency_ms = self.clock.now_ms().saturating_sub(start_b);
-        tracing::info!(provider = %label_b, latency_ms, outcome = "ok", "provider call succeeded");
-        validate(&content)
-            .map_err(|e| DeathpwnError::Provider(format!("{label_b}: validation failed: {e}")))
+        Err(DeathpwnError::Provider(last_error))
     }
 }
 
@@ -118,5 +117,26 @@ mod tests {
             .expect("A errors, B succeeds and validates");
 
         assert_eq!(out, Probe { n: 7 });
+    }
+
+    #[tokio::test]
+    async fn provider_a_bad_json_falls_back_to_b() {
+        let a = Arc::new(FakeAiProvider::new(
+            "A",
+            vec![Ok("not valid json".to_string())],
+        ));
+        let b = Arc::new(FakeAiProvider::new(
+            "B",
+            vec![Ok(r#"{"n":9}"#.to_string())],
+        ));
+        let clock = Arc::new(FakeClock::fixed(0));
+        let client = FailoverClient::new(a, b, clock);
+
+        let out = client
+            .complete_validated(&req(), parse)
+            .await
+            .expect("A validation fails, B succeeds");
+
+        assert_eq!(out, Probe { n: 9 });
     }
 }
