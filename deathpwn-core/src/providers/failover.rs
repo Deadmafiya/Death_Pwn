@@ -21,7 +21,7 @@ impl FailoverClient {
     where
         F: Fn(&str) -> std::result::Result<T, String>,
     {
-        let mut last_error = String::from("no providers configured");
+        let mut errors: Vec<String> = Vec::new();
 
         for provider in [&self.a, &self.b] {
             let label = provider.label().to_string();
@@ -36,19 +36,22 @@ impl FailoverClient {
                         }
                         Err(verr) => {
                             tracing::warn!(provider = %label, latency_ms, outcome = "validation_failed", error = %verr, "provider response failed validation");
-                            last_error = format!("{label}: validation failed: {verr}");
+                            errors.push(format!("{label}: validation failed: {verr}"));
                         }
                     }
                 }
                 Err(perr) => {
                     let latency_ms = self.clock.now_ms().saturating_sub(start);
                     tracing::warn!(provider = %label, latency_ms, outcome = "error", error = ?perr, "provider call failed");
-                    last_error = format!("{label}: provider error: {perr:?}");
+                    errors.push(format!("{label}: provider error: {perr:?}"));
                 }
             }
         }
 
-        Err(DeathpwnError::Provider(last_error))
+        Err(DeathpwnError::Provider(format!(
+            "all providers failed: {}",
+            errors.join("; ")
+        )))
     }
 }
 
@@ -138,5 +141,32 @@ mod tests {
             .expect("A validation fails, B succeeds");
 
         assert_eq!(out, Probe { n: 9 });
+    }
+
+    #[tokio::test]
+    async fn both_providers_fail_yields_aggregated_error() {
+        let a = Arc::new(FakeAiProvider::new(
+            "A",
+            vec![Err(crate::providers::ProviderError::RateLimit)],
+        ));
+        let b = Arc::new(FakeAiProvider::new(
+            "B",
+            vec![Ok("garbage".to_string())],
+        ));
+        let clock = Arc::new(FakeClock::fixed(0));
+        let client = FailoverClient::new(a, b, clock);
+
+        let err = client
+            .complete_validated(&req(), parse)
+            .await
+            .expect_err("both providers fail");
+
+        match err {
+            crate::error::DeathpwnError::Provider(msg) => {
+                assert!(msg.contains("A:"), "aggregated error must name provider A: {msg}");
+                assert!(msg.contains("B:"), "aggregated error must name provider B: {msg}");
+            }
+            other => panic!("expected DeathpwnError::Provider, got {other:?}"),
+        }
     }
 }

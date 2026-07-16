@@ -3,6 +3,7 @@ pub mod failover;
 pub mod openai;
 
 pub use ai::{AiProvider, ChatRequest, ProviderError};
+pub use failover::FailoverClient;
 pub use openai::OpenAiClient;
 
 #[cfg(any(test, feature = "test-support"))]
