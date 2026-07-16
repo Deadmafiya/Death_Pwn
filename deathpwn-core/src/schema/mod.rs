@@ -92,6 +92,29 @@ pub struct FindingItem {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    NotFound,
+    BenignEmpty,
+    FixableUsage,
+    Transient,
+    Fatal,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecFailureVerdict {
+    pub class: FailureClass,
+    pub corrected_argv: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalVerdict {
+    pub achieved: bool,
+    pub reason: String,
+    pub next_step_hint: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +293,73 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let back: Stage4Render = serde_json::from_str(&json).unwrap();
         assert_eq!(original, back);
+    }
+
+    #[test]
+    fn failure_class_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&FailureClass::NotFound).unwrap(),
+            "\"not_found\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureClass::BenignEmpty).unwrap(),
+            "\"benign_empty\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureClass::FixableUsage).unwrap(),
+            "\"fixable_usage\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureClass::Transient).unwrap(),
+            "\"transient\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureClass::Fatal).unwrap(),
+            "\"fatal\""
+        );
+    }
+
+    #[test]
+    fn exec_failure_verdict_round_trips_with_and_without_argv() {
+        let with = ExecFailureVerdict {
+            class: FailureClass::FixableUsage,
+            corrected_argv: Some(vec!["nmap".to_string(), "-sS".to_string()]),
+        };
+        let without = ExecFailureVerdict {
+            class: FailureClass::Fatal,
+            corrected_argv: None,
+        };
+        for v in [with, without] {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: ExecFailureVerdict = serde_json::from_str(&json).unwrap();
+            assert_eq!(v, back);
+        }
+    }
+
+    #[test]
+    fn exec_failure_verdict_rejects_unknown_class() {
+        let bad = r#"{"class":"exploded","corrected_argv":null}"#;
+        assert!(serde_json::from_str::<ExecFailureVerdict>(bad).is_err());
+    }
+
+    #[test]
+    fn goal_verdict_parses_from_model_json() {
+        let json = r#"{"achieved":false,"reason":"ports still unknown","next_step_hint":"run nmap -sV"}"#;
+        let v: GoalVerdict = serde_json::from_str(json).unwrap();
+        assert!(!v.achieved);
+        assert_eq!(v.reason, "ports still unknown");
+        assert_eq!(v.next_step_hint.as_deref(), Some("run nmap -sV"));
+    }
+
+    #[test]
+    fn goal_verdict_round_trips_without_hint() {
+        let v = GoalVerdict {
+            achieved: true,
+            reason: "target fully enumerated".to_string(),
+            next_step_hint: None,
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        let back: GoalVerdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
     }
 }
