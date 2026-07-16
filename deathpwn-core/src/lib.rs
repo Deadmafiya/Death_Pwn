@@ -8,6 +8,8 @@ pub mod config;
 pub mod error;
 pub mod providers;
 pub mod schema;
+pub mod search;
 
 pub use config::{Config, ProviderConfig};
 pub use error::{DeathpwnError, Result};
+pub use search::{SearchProvider, SearchResult};
