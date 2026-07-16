@@ -200,4 +200,22 @@ mod tests {
         let results = parse_ddg_html("<html><body>no results here</body></html>");
         assert!(results.is_empty());
     }
+
+    #[tokio::test]
+    #[ignore = "hits the live DuckDuckGo endpoint; run manually with --ignored"]
+    async fn ddg_live_search_returns_nonempty_results() {
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) deathpwn/0.1")
+            .build()
+            .expect("build reqwest client");
+
+        let ddg = DuckDuckGoSearch::new(client);
+        let results = ddg.search("nmap port scan").await.unwrap();
+
+        assert!(!results.is_empty(), "live DDG should return at least one result");
+        assert!(
+            results.iter().all(|r| !r.url.is_empty()),
+            "every live result should carry a decoded url"
+        );
+    }
 }
