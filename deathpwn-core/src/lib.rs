@@ -6,6 +6,7 @@
 pub mod cancel;
 pub mod clock;
 pub mod config;
+pub mod detector;
 pub mod error;
 pub mod exec;
 
