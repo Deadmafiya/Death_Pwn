@@ -21,17 +21,35 @@ impl FailoverClient {
     where
         F: Fn(&str) -> std::result::Result<T, String>,
     {
-        let label = self.a.label().to_string();
-        let start = self.clock.now_ms();
+        // Provider A.
+        let label_a = self.a.label().to_string();
+        let start_a = self.clock.now_ms();
+        match self.a.complete(req).await {
+            Ok(content) => {
+                let latency_ms = self.clock.now_ms().saturating_sub(start_a);
+                tracing::info!(provider = %label_a, latency_ms, outcome = "ok", "provider call succeeded");
+                return validate(&content).map_err(|e| {
+                    DeathpwnError::Provider(format!("{label_a}: validation failed: {e}"))
+                });
+            }
+            Err(e) => {
+                let latency_ms = self.clock.now_ms().saturating_sub(start_a);
+                tracing::warn!(provider = %label_a, latency_ms, outcome = "error", error = ?e, "provider call failed");
+            }
+        }
+
+        // Provider B.
+        let label_b = self.b.label().to_string();
+        let start_b = self.clock.now_ms();
         let content = self
-            .a
+            .b
             .complete(req)
             .await
-            .map_err(|e| DeathpwnError::Provider(format!("{label}: provider error: {e:?}")))?;
-        let latency_ms = self.clock.now_ms().saturating_sub(start);
-        tracing::info!(provider = %label, latency_ms, outcome = "ok", "provider call succeeded");
+            .map_err(|e| DeathpwnError::Provider(format!("{label_b}: provider error: {e:?}")))?;
+        let latency_ms = self.clock.now_ms().saturating_sub(start_b);
+        tracing::info!(provider = %label_b, latency_ms, outcome = "ok", "provider call succeeded");
         validate(&content)
-            .map_err(|e| DeathpwnError::Provider(format!("{label}: validation failed: {e}")))
+            .map_err(|e| DeathpwnError::Provider(format!("{label_b}: validation failed: {e}")))
     }
 }
 
@@ -79,5 +97,26 @@ mod tests {
             .expect("A succeeds and validates");
 
         assert_eq!(out, Probe { n: 1 });
+    }
+
+    #[tokio::test]
+    async fn provider_a_error_falls_back_to_b() {
+        let a = Arc::new(FakeAiProvider::new(
+            "A",
+            vec![Err(crate::providers::ProviderError::Timeout)],
+        ));
+        let b = Arc::new(FakeAiProvider::new(
+            "B",
+            vec![Ok(r#"{"n":7}"#.to_string())],
+        ));
+        let clock = Arc::new(FakeClock::fixed(0));
+        let client = FailoverClient::new(a, b, clock);
+
+        let out = client
+            .complete_validated(&req(), parse)
+            .await
+            .expect("A errors, B succeeds and validates");
+
+        assert_eq!(out, Probe { n: 7 });
     }
 }
