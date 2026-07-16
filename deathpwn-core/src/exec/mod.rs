@@ -1,6 +1,10 @@
 //! Execution boundary: the single trait through which every real OS process is
 //! run, plus the value types crossing that boundary.
 
+pub mod runner;
+
+pub use runner::ShellRunner;
+
 use async_trait::async_trait;
 
 use crate::cancel::CancelToken;
