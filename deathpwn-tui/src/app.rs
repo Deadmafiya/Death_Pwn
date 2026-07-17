@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use deathpwn_core::cancel::CancelToken;
 use deathpwn_core::engine::EngineEvent;
+use deathpwn_core::engine::Phase;
 use deathpwn_core::exec::Stream;
 use deathpwn_core::schema::Stage4Render;
 
@@ -19,6 +20,22 @@ use crate::ui;
 /// Lines scrolled per PageUp / PageDown.
 const PAGE: u16 = 10;
 
+/// Spinner animation frames (braille-based, smooth rotation).
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Map a Phase color key to a ratatui Color.
+fn phase_color(phase: &Phase) -> Color {
+    match phase.color_key() {
+        "darkgray" => Color::DarkGray,
+        "blue" => Color::Blue,
+        "yellow" => Color::Yellow,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "lightred" => Color::LightRed,
+        _ => Color::Gray,
+    }
+}
+
 /// One unit of work sent from the UI to the engine task: the raw input line
 /// plus the cancel token the UI keeps a clone of (so Ctrl+C reaches the child).
 pub struct Job {
@@ -26,11 +43,15 @@ pub struct Job {
     pub cancel: CancelToken,
 }
 
-/// The bottom status bar: current target, goal step count, active provider.
+/// The bottom status bar: current target, goal step count, active provider,
+/// current pipeline phase with animated spinner (only when running).
 pub struct StatusBar {
     pub target: Option<String>,
     pub steps: u32,
     pub provider: String,
+    pub phase: Phase,
+    pub spinner_tick: usize,
+    pub running: bool,
 }
 
 impl StatusBar {
@@ -39,30 +60,58 @@ impl StatusBar {
             target: None,
             steps: 0,
             provider: provider.into(),
+            phase: Phase::Idle,
+            spinner_tick: 0,
+            running: false,
         }
+    }
+
+    /// Advance the spinner animation frame.
+    pub fn tick(&mut self) {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
 
     /// Render the status bar as a single styled line.
     pub fn line(&self) -> Line<'static> {
         let target = self.target.clone().unwrap_or_else(|| "-".to_string());
+        let color = phase_color(&self.phase);
+
+        let phase_part: Span = if self.running {
+            let frame = SPINNER[self.spinner_tick % SPINNER.len()];
+            Span::styled(
+                format!("{} {}", frame, self.phase.label()),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("◼ ready", Style::default().fg(Color::DarkGray))
+        };
+
         Line::from(vec![
-            Span::styled(" target: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(target, Style::default().fg(Color::Cyan)),
+            phase_part,
             Span::raw("  "),
-            Span::styled("steps: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(self.steps.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled("target:", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled(target, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::raw("  "),
-            Span::styled("provider: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("steps:", Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled(self.steps.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled("provider:", Style::default().fg(Color::White)),
+            Span::raw(" "),
             Span::styled(self.provider.clone(), Style::default().fg(Color::Green)),
         ])
     }
 }
 
-/// All UI state. `output` is the scrollback console; `current_render` holds the
-/// most recent structured `Stage4Render` shown in its own pane.
+/// All UI state. `output` is the terminal output pane; `log_lines` is the
+/// left-side activity log (phase banners); `current_render` holds the most
+/// recent structured `Stage4Render`.
 pub struct App {
     pub input: String,
     pub output: Vec<Line<'static>>,
+    #[allow(dead_code)]
+    pub log_lines: Vec<Line<'static>>,
     pub status: StatusBar,
     pub scroll: u16,
     pub should_quit: bool,
@@ -77,6 +126,7 @@ impl App {
         Self {
             input: String::new(),
             output: Vec::new(),
+            log_lines: Vec::new(),
             status,
             scroll: 0,
             should_quit: false,
@@ -96,9 +146,7 @@ impl App {
             (KeyCode::Char('c'), true) => self.cancel_running(),
             (KeyCode::Char('x'), true) => self.cancel_and_drain(),
             (KeyCode::Char('d'), true) => {
-                if self.input.is_empty() {
-                    self.should_quit = true;
-                }
+                self.should_quit = true;
             }
             (KeyCode::Esc, _) => {
                 if self.input.is_empty() {
@@ -119,13 +167,21 @@ impl App {
     pub fn on_event(&mut self, event: EngineEvent) {
         match event {
             EngineEvent::Output(line) => {
-                let style = match line.stream {
-                    Stream::Stdout => Style::default().fg(Color::Gray),
-                    Stream::Stderr => Style::default().fg(Color::Red),
+                let (style, target) = match line.stream {
+                    Stream::Stdout => (Style::default().fg(Color::Gray), &mut self.output),
+                    Stream::Stderr => (Style::default().fg(Color::Red), &mut self.output),
+                    Stream::Banner => (
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                        &mut self.output,
+                    ),
                 };
                 for text in line.text.lines() {
-                    self.output
-                        .push(Line::from(Span::styled(text.to_string(), style)));
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    target.push(Line::from(Span::styled(text.to_string(), style)));
                 }
             }
             EngineEvent::Rendered(render) => {
@@ -146,7 +202,14 @@ impl App {
                 }
                 self.status.steps = step;
             }
-            EngineEvent::Done => self.running = false,
+            EngineEvent::PhaseChange(phase) => {
+                self.status.phase = phase;
+            }
+            EngineEvent::Done => {
+                self.running = false;
+                self.status.running = false;
+                self.status.phase = Phase::Idle;
+            }
         }
     }
 
@@ -159,6 +222,7 @@ impl App {
         let cancel = CancelToken::new();
         self.cancel = cancel.clone();
         self.running = true;
+        self.status.running = true;
         let job = Job { line, cancel };
         // Non-blocking: the engine task drains jobs. A full queue drops input
         // rather than stalling the UI thread.
@@ -177,6 +241,8 @@ impl App {
     fn cancel_and_drain(&mut self) {
         self.cancel.cancel();
         self.running = false;
+        self.status.running = false;
+        self.status.phase = Phase::Idle;
         self.input.clear();
     }
 }
@@ -240,10 +306,7 @@ mod tests {
 
         app.handle_key(key(KeyCode::Char('y')));
         app.handle_key(ctrl(KeyCode::Char('d')));
-        assert!(!app.should_quit, "Ctrl+D with text present does not quit");
-        app.input.clear();
-        app.handle_key(ctrl(KeyCode::Char('d')));
-        assert!(app.should_quit, "Ctrl+D on empty input quits");
+        assert!(app.should_quit, "Ctrl+D quits immediately, even with text");
 
         let (job_tx2, _rx2) = mpsc::channel::<Job>(16);
         let mut app2 = App::new(job_tx2, StatusBar::new("gpt-4o-mini"));

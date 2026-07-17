@@ -34,6 +34,8 @@ pub struct RunOutcome {
 pub enum Stream {
     Stdout,
     Stderr,
+    /// Visual banner lines (phase changes, command banners) — styled prominently.
+    Banner,
 }
 
 /// A single line streamed live from a running process.

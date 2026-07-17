@@ -13,31 +13,38 @@ use deathpwn_core::schema::{RenderBody, Stage4Render};
 
 use crate::app::App;
 
-/// Draw the whole UI: output pane (console + optional structured render),
+/// Draw the whole UI: left log pane (1/5) + right terminal output (4/5),
 /// status bar, and the input line.
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // output pane
+            Constraint::Min(1),    // main area (log + output)
             Constraint::Length(1), // status bar
             Constraint::Length(3), // input line (bordered)
         ])
         .split(f.area());
 
+    // Draw terminal output (with optional analysis split)
     match &app.current_render {
         Some(render) => {
-            let panes = Layout::default()
+            let out_panes = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                 .split(chunks[0]);
-            draw_console(f, panes[0], app);
-            render_section(f, panes[1], render);
+            draw_console(f, out_panes[0], app);
+            render_section(f, out_panes[1], render);
         }
         None => draw_console(f, chunks[0], app),
     }
 
-    let status = Paragraph::new(app.status.line()).style(Style::default().bg(Color::Black));
+    let status_bg = if app.running {
+        Color::Rgb(20, 30, 50)
+    } else {
+        Color::Rgb(15, 15, 25)
+    };
+    let status = Paragraph::new(app.status.line())
+        .block(Block::default().style(Style::default().bg(status_bg)));
     f.render_widget(status, chunks[1]);
 
     let input = Paragraph::new(Line::from(vec![

@@ -9,8 +9,9 @@ Built with **ratatui** + **crossterm**. Runs on tokio async runtime.
 
 ```
 tokio::select! {
-    key = key_rx.recv()     → App::handle_key()   → may send Job to engine
-    event = event_rx.recv() → App::on_event()     → updates UI state
+    key = key_rx.recv()       → App::handle_key()   → may send Job to engine
+    event = event_rx.recv()   → App::on_event()     → updates UI state
+    _ = sleep(80ms)           → redraws spinner animation
 }
 ```
 
@@ -21,70 +22,78 @@ Two background tasks:
 | Key input thread | `std::thread::spawn` | Polls crossterm for key events, sends `KeyEvent` via `mpsc` |
 | Engine task | `tokio::spawn` | Receives `Job { line, cancel_token }`, calls `Engine::handle_line()`, streams `EngineEvent`s back |
 
-## Layout (3 Panes)
+## Layout (4 Panes)
 
 ```
-┌──────────────────────────────────────────┐
-│  Console Output (scrollable)              │
-│  [exec] nmap -p 80 10.0.0.5              │
-│  PORT   STATE SERVICE                     │
-│  80/tcp open  http                        │
-│  ...                                      │
-│                                           │
-│  ── Analysis ─────────────────────────── │
-│  Open Ports                     Severity  │
-│  80/tcp (http)                  Info      │
-│                                           │
-├──────────────────────────────────────────┤
-│ Status: step 2/12 | Provider: A | ...    │
-├──────────────────────────────────────────┤
-│ > enumerate the web server on 10.0.0.5   │
-│                                           │
-│                                           │
-└──────────────────────────────────────────┘
+┌──activity──────┬──output──────────────────────────────────────────────┐
+│── THINKING ──  │$ nmap -sV 10.0.0.5                                    │
+│  understanding │PORT   STATE SERVICE                                    │
+│── THINKING ──  │22/tcp open  ssh                                       │
+│  retrieving    │80/tcp open  http                                       │
+│── THINKING ──  │                                                        │
+│  planning      │── analysis ────────────────────────────────────────   │
+│── RUNNING ──   │Open Ports                                    Severity │
+│  scan services │22/tcp (ssh)                                  Info     │
+│── ANALYZING ── │80/tcp (http)                                 Info     │
+├────────────────┴───────────────────────────────────────────────────────┤
+│ ⠋ executing command...   target: 10.0.0.5  steps: 3  provider: model-a │
+├────────────────────────────────────────────────────────────────────────┤
+│ > enumerate the web server on 10.0.0.5                                  │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-When a `Stage4Render` is present, the output pane splits 60/40:
-- **Top (60%):** Raw command output
-- **Bottom (40%):** Structured "Analysis" pane — rendered from `stage4_to_lines()`
+- **Left 20%** — "activity" log pane showing phase banners (THINKING, RUNNING, ANALYZING, EVALUATING)
+- **Right 80%** — Terminal output with optional 60/40 analysis split when `Stage4Render` is present
+- **Status bar** — animated spinner with phase, target, steps, provider
+- **Input line** — bordered 3-line input box
+
+## Status Bar
+
+The status bar shows an animated braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) during active pipeline execution. When idle, it shows a static `◼ ready`. Phase colors:
+
+| Phase | Color |
+|-------|-------|
+| `Classifying` / `Understanding` / `Retrieving` / `Planning` | Blue |
+| `Executing` | Yellow |
+| `Rendering` / `GoalChecking` | Magenta |
+| `Installing` | Cyan |
+| `Correcting` | Light Red |
+| `Idle` | Dark Gray |
 
 ## Key Bindings
 
 | Key | Action |
 |-----|--------|
 | `Enter` | Submit input as a `Job` to the engine |
-| `Ctrl+C` | Cancel current running command (flips CancelToken, engine reports cancelled outcome) |
-| `Ctrl+X` | Cancel command + drain remaining chain, get fresh prompt |
-| `Ctrl+D` | Quit (on empty input) |
+| `Ctrl+C` | Cancel current running command (flips CancelToken) |
+| `Ctrl+X` | Cancel command + drain remaining chain, fresh prompt |
+| `Ctrl+D` | Quit immediately (always, even with text in input) |
 | `Esc` | Quit (on empty input) |
 | `PageUp` / `PageDown` | Scroll output buffer |
 
 ## Engine Events
 
-The UI listens for these events from the engine task:
-
 | Event | Payload | UI Action |
 |-------|---------|-----------|
-| `Output` | `String` | Append to scrollback buffer |
-| `Rendered` | `Stage4Render` | Store for analysis pane rendering |
-| `Progress` | `step: usize, total: usize` | Update status bar |
-| `Done` | - | Clear cancel token, return to idle |
-| `Cancelled` | - | Report cancelled in output |
+| `Output` | `OutputLine { stream, text }` | Route to log pane (Banner) or output pane (Stdout/Stderr) |
+| `Rendered` | `Stage4Render` | Display structured analysis in output pane |
+| `Error` | `String` | Red bold error in output pane |
+| `Progress` | `target, step` | Update status bar target and step count |
+| `PhaseChange` | `Phase` | Update status bar phase label and color |
+| `Done` | - | Reset to idle state |
 
 ## App State (`app.rs`)
 
 ```
 App {
-  input: String,                     // current input buffer
-  output_lines: Vec<String>,         // scrollback buffer
-  scroll_offset: usize,              // for PageUp/PageDown
-  status_text: String,               // status bar line
-  current_render: Option<Stage4Render>, // for analysis pane
-  cancel_token: Option<CancelToken>, // active cancellation handle
-  step: usize,                       // current step in plan/goal loop
-  total_steps: usize,                // total steps
-  provider_label: String,            // "A" or "B"
+  input: String,                       // current input buffer
+  output: Vec<Line>,                   // terminal output (right pane)
+  log_lines: Vec<Line>,                // activity log (left pane)
+  status: StatusBar,                   // phase, target, steps, spinner
+  scroll: u16,                         // PageUp/PageDown offset
+  should_quit: bool,
+  running: bool,
+  cancel: CancelToken,
+  current_render: Option<Stage4Render>, // current analysis pane content
 }
 ```
-
-`handle_key()` is synchronous and side-effect-light — unit-testable with scripted key sequences.

@@ -88,13 +88,23 @@ impl<R: CommandRunner> FeedbackLoop<R> {
 
         // 1. availability check → auto-install on miss (not counted as a correction).
         if !self.is_available(&current.tool, &cancel).await {
-            let note = self.install(&current.tool, &cancel).await?;
-            installs += 1;
-            attempts.push(AttemptLog {
-                argv: vec![format!("<install {}>", current.tool)],
-                exit: None,
-                note,
-            });
+            match self.install(&current.tool, &cancel).await {
+                Ok(note) => {
+                    installs += 1;
+                    attempts.push(AttemptLog {
+                        argv: vec![format!("<install {}>", current.tool)],
+                        exit: None,
+                        note,
+                    });
+                }
+                Err(e) => {
+                    attempts.push(AttemptLog {
+                        argv: vec![format!("<install {}>", current.tool)],
+                        exit: None,
+                        note: format!("install skipped: {e}"),
+                    });
+                }
+            }
         }
 
         loop {
@@ -168,13 +178,24 @@ impl<R: CommandRunner> FeedbackLoop<R> {
                         exit: outcome.exit,
                         note: "not_found".into(),
                     });
-                    let note = self.install(&current.tool, &cancel).await?;
-                    installs += 1;
-                    attempts.push(AttemptLog {
-                        argv: vec![format!("<install {}>", current.tool)],
-                        exit: None,
-                        note,
-                    });
+                    match self.install(&current.tool, &cancel).await {
+                        Ok(note) => {
+                            installs += 1;
+                            attempts.push(AttemptLog {
+                                argv: vec![format!("<install {}>", current.tool)],
+                                exit: None,
+                                note,
+                            });
+                        }
+                        Err(e) => {
+                            attempts.push(AttemptLog {
+                                argv: vec![format!("<install {}>", current.tool)],
+                                exit: None,
+                                note: format!("install failed: {e}"),
+                            });
+                            return Ok(FeedbackOutcome { outcome, attempts });
+                        }
+                    }
                     continue;
                 }
                 FailureClass::FixableUsage => {
@@ -282,9 +303,39 @@ impl<R: CommandRunner> FeedbackLoop<R> {
             temperature: 0.0,
         };
         let raw = self.complete_failover(&req).await?;
-        let verdict: ExecFailureVerdict = serde_json::from_str(raw.trim())
+        let json = extract_json(raw.trim());
+        let verdict: ExecFailureVerdict = serde_json::from_str(&json)
             .map_err(|e| DeathpwnError::Schema(format!("exec failure verdict parse: {e}")))?;
         Ok(verdict)
+    }
+}
+
+/// Extract the first complete JSON object from a string that may have trailing
+/// text or markdown. Finds the outermost `{...}` pair, counting nesting depth.
+fn extract_json(raw: &str) -> String {
+    let start = match raw.find('{') {
+        Some(idx) => idx,
+        None => return raw.to_string(),
+    };
+    let mut depth = 0u32;
+    let mut end = start;
+    for (i, ch) in raw[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if end > start {
+        raw[start..end].to_string()
+    } else {
+        raw.to_string()
     }
 }
 

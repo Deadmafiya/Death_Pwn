@@ -31,6 +31,11 @@ impl<R: CommandRunner> Detector<R> {
         &self.shell
     }
 
+    /// Expose the underlying command runner.
+    pub fn runner(&self) -> &R {
+        &self.runner
+    }
+
     /// Decide whether `line` is a direct command or raw natural-language input.
     ///
     /// Empty/whitespace-only lines are raw. Otherwise the leading token
