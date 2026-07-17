@@ -8,3 +8,6 @@ pub use retrieve::{build_query, Retrieve};
 
 pub mod plan;
 pub use plan::Plan;
+
+pub mod render;
+pub use render::Render;
