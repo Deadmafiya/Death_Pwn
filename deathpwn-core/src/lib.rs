@@ -12,6 +12,8 @@ pub mod error;
 pub mod exec;
 
 pub use exec::{CommandRunner, CommandSpec, OutputLine, RunOutcome, ShellRunner, Stream};
+pub mod engine;
+pub mod goal;
 pub mod pipeline;
 pub mod providers;
 pub mod schema;
