@@ -14,6 +14,7 @@ pub use exec::{CommandRunner, CommandSpec, OutputLine, RunOutcome, ShellRunner, 
 pub mod providers;
 pub mod schema;
 pub mod search;
+pub mod session;
 
 pub use cancel::CancelToken;
 pub use config::{Config, ProviderConfig};
