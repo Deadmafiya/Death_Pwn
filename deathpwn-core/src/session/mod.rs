@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 pub mod artifacts;
 
+pub use artifacts::Artifacts;
+
 /// A scan/attack target — either a host or a URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -118,5 +120,26 @@ mod tests {
                 "gobuster dir -u http://example.com".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn tracks_ports_findings_and_services() {
+        let mut s = SessionState::new();
+
+        s.add_ports("10.0.0.5", vec![80, 22, 80]); // duplicate 80 collapses
+        s.add_ports("10.0.0.5", vec![443]); // merges into existing host
+        s.add_service("http");
+        s.add_service("http"); // duplicate ignored
+        s.add_finding(Finding {
+            severity: "high".to_string(),
+            title: "Anonymous FTP".to_string(),
+            detail: "vsftpd allows anonymous login".to_string(),
+        });
+
+        assert_eq!(s.hosts(), &["10.0.0.5".to_string()]);
+        assert_eq!(s.ports_by_host().get("10.0.0.5"), Some(&vec![22u16, 80, 443]));
+        assert_eq!(s.services(), &["http".to_string()]);
+        assert_eq!(s.findings().len(), 1);
+        assert_eq!(s.findings()[0].severity, "high");
     }
 }
