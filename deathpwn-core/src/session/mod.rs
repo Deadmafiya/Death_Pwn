@@ -44,6 +44,29 @@ impl SessionState {
         self.command_log.push(command.to_string());
     }
 
+    pub fn add_finding(&mut self, finding: Finding) {
+        self.findings.push(finding);
+    }
+
+    pub fn add_service(&mut self, service: &str) {
+        if !self.services.iter().any(|s| s == service) {
+            self.services.push(service.to_string());
+        }
+    }
+
+    pub fn add_ports(&mut self, host: &str, ports: Vec<u16>) {
+        if !self.hosts.iter().any(|h| h == host) {
+            self.hosts.push(host.to_string());
+        }
+        let entry = self.ports_by_host.entry(host.to_string()).or_default();
+        for port in ports {
+            if !entry.contains(&port) {
+                entry.push(port);
+            }
+        }
+        entry.sort_unstable();
+    }
+
     pub fn targets(&self) -> &[Target] {
         &self.targets
     }
