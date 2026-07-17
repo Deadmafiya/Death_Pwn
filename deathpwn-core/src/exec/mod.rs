@@ -1,8 +1,11 @@
 //! Execution boundary: the single trait through which every real OS process is
 //! run, plus the value types crossing that boundary.
 
+pub mod feedback;
+pub mod installer;
 pub mod runner;
 
+pub use feedback::{AttemptLog, FeedbackLoop, FeedbackOutcome};
 pub use runner::ShellRunner;
 
 use async_trait::async_trait;
@@ -57,7 +60,7 @@ pub use test_support::FakeCommandRunner;
 #[cfg(any(test, feature = "test-support"))]
 mod test_support {
     use std::collections::{HashSet, VecDeque};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
 
@@ -68,14 +71,18 @@ mod test_support {
     /// (availability probes), the feedback loop (separate run/shell queues plus
     /// availability), and the engine (a single constant outcome). Every input is
     /// recorded so consumers can assert on what was run.
-    #[derive(Default)]
+    ///
+    /// State is interior-shared via `Arc`, so a `.clone()` observes the same
+    /// queues and call log — the feedback loop keeps its own handle while the
+    /// test asserts on the original.
+    #[derive(Clone, Default)]
     pub struct FakeCommandRunner {
-        run_outcomes: Mutex<VecDeque<RunOutcome>>,
-        shell_outcomes: Mutex<VecDeque<RunOutcome>>,
-        available: Mutex<HashSet<String>>,
-        constant: Mutex<Option<RunOutcome>>,
-        run_calls: Mutex<Vec<CommandSpec>>,
-        shell_calls: Mutex<Vec<String>>,
+        run_outcomes: Arc<Mutex<VecDeque<RunOutcome>>>,
+        shell_outcomes: Arc<Mutex<VecDeque<RunOutcome>>>,
+        available: Arc<Mutex<HashSet<String>>>,
+        constant: Arc<Mutex<Option<RunOutcome>>>,
+        run_calls: Arc<Mutex<Vec<CommandSpec>>>,
+        shell_calls: Arc<Mutex<Vec<String>>>,
     }
 
     /// The fallback outcome for an exhausted queue: exit 0, empty streams, not cancelled.
