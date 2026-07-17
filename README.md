@@ -1,5 +1,10 @@
 # deathPWN
 
+
+# WARNING: deathPWN is in ALPHA Phase it may not perfecly work on your system
+-> wait for the stable update
+
+
 Natural-language-driven offensive security terminal for BlackArch Linux.
 
 User types raw English ("enumerate the web server on 10.0.0.5") — deathPWN understands the intent, searches the web for relevant tool commands, executes the right pentesting tools, and renders structured output — all through an AI orchestration pipeline with zero conversational fluff.
