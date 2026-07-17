@@ -3,5 +3,12 @@ name = "deathpwn-tui"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "deathpwn"
+path = "src/main.rs"
+
 [dependencies]
 deathpwn-core = { path = "../deathpwn-core" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

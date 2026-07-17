@@ -17,6 +17,16 @@ impl DuckDuckGoSearch {
     pub fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
+
+    /// Build a provider with a client configured from a request timeout, so
+    /// callers (e.g. the TUI) need not depend on `reqwest` directly.
+    pub fn with_timeout_secs(http_timeout_secs: u64) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(http_timeout_secs))
+            .build()
+            .map_err(|e| DeathpwnError::Search(format!("ddg client build failed: {e}")))?;
+        Ok(Self { client })
+    }
 }
 
 #[async_trait]
