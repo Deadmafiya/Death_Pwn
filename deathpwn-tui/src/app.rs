@@ -140,6 +140,12 @@ impl App {
                         .add_modifier(Modifier::BOLD),
                 )));
             }
+            EngineEvent::Progress { target, step } => {
+                if let Some(target) = target {
+                    self.status.target = Some(target);
+                }
+                self.status.steps = step;
+            }
             EngineEvent::Done => self.running = false,
         }
     }
@@ -243,5 +249,29 @@ mod tests {
         let mut app2 = App::new(job_tx2, StatusBar::new("gpt-4o-mini"));
         app2.handle_key(key(KeyCode::Esc));
         assert!(app2.should_quit, "Esc on empty input quits");
+    }
+
+    #[test]
+    fn progress_event_updates_status_bar() {
+        let (job_tx, _rx) = mpsc::channel::<Job>(16);
+        let mut app = App::new(job_tx, StatusBar::new("gpt-4o-mini"));
+        assert_eq!(app.status.target, None);
+        assert_eq!(app.status.steps, 0);
+
+        app.on_event(EngineEvent::Progress {
+            target: Some("10.0.0.5".to_string()),
+            step: 1,
+        });
+        assert_eq!(app.status.target.as_deref(), Some("10.0.0.5"));
+        assert_eq!(app.status.steps, 1);
+
+        // A later progress event with no target keeps the last known target but
+        // advances the step count.
+        app.on_event(EngineEvent::Progress {
+            target: None,
+            step: 2,
+        });
+        assert_eq!(app.status.target.as_deref(), Some("10.0.0.5"));
+        assert_eq!(app.status.steps, 2);
     }
 }

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use crate::cancel::CancelToken;
 use crate::config::Config;
 use crate::error::{DeathpwnError, Result};
-use crate::exec::installer::resolve_install_script;
 use crate::exec::{CommandRunner, CommandSpec, RunOutcome};
 use crate::providers::{AiProvider, ChatRequest};
 use crate::schema::{ExecFailureVerdict, FailureClass};
@@ -18,6 +17,7 @@ matching {\"class\": one of not_found|benign_empty|fixable_usage|transient|fatal
 when the command has a usage/flag error you can repair. No prose.";
 
 /// One logged execution attempt inside the feedback loop.
+#[derive(Debug, Clone)]
 pub struct AttemptLog {
     pub argv: Vec<String>,
     pub exit: Option<i32>,
@@ -25,6 +25,7 @@ pub struct AttemptLog {
 }
 
 /// Final result of a feedback-loop run: the terminal outcome plus the full attempt trail.
+#[derive(Debug, Clone)]
 pub struct FeedbackOutcome {
     pub outcome: RunOutcome,
     pub attempts: Vec<AttemptLog>,
@@ -32,9 +33,14 @@ pub struct FeedbackOutcome {
 
 /// Wraps a `CommandRunner` with availability checks, auto-install, and
 /// AI-driven self-correction (GOAL.md §4 / spec §6).
+///
+/// The classify/install AI steps use dual-provider failover (GOAL.md §8): the
+/// primary `ai` is tried first, and `ai_b` (when present) is tried on a provider
+/// error. Construct with [`with_failover`](Self::with_failover) to enable it.
 pub struct FeedbackLoop<R: CommandRunner> {
     runner: R,
     ai: Arc<dyn AiProvider>,
+    ai_b: Option<Arc<dyn AiProvider>>,
     max_corrections: u32,
 }
 
@@ -43,6 +49,24 @@ impl<R: CommandRunner> FeedbackLoop<R> {
         Self {
             runner,
             ai,
+            ai_b: None,
+            max_corrections,
+        }
+    }
+
+    /// Like [`new`](Self::new) but with a fallback provider for the loop's AI
+    /// steps (classify + install-resolve), matching the dual-provider policy of
+    /// every pipeline stage (GOAL.md §8).
+    pub fn with_failover(
+        runner: R,
+        ai: Arc<dyn AiProvider>,
+        ai_b: Arc<dyn AiProvider>,
+        max_corrections: u32,
+    ) -> Self {
+        Self {
+            runner,
+            ai,
+            ai_b: Some(ai_b),
             max_corrections,
         }
     }
@@ -51,6 +75,7 @@ impl<R: CommandRunner> FeedbackLoop<R> {
         Self {
             runner,
             ai,
+            ai_b: None,
             max_corrections: config.max_corrections,
         }
     }
@@ -201,8 +226,33 @@ impl<R: CommandRunner> FeedbackLoop<R> {
         out.exit == Some(0)
     }
 
+    /// Complete a request against provider A, failing over to provider B (when
+    /// configured) if A returns a provider-level error (GOAL.md §8: every AI
+    /// call — including the feedback loop's classify/install steps — is
+    /// resilient). Aggregates both errors when neither succeeds.
+    async fn complete_failover(&self, req: &ChatRequest) -> Result<String> {
+        let first = self.ai.complete(req).await;
+        match first {
+            Ok(content) => Ok(content),
+            Err(err_a) => match &self.ai_b {
+                Some(b) => b
+                    .complete(req)
+                    .await
+                    .map_err(|err_b| DeathpwnError::Provider(format!("A: {err_a:?}; B: {err_b:?}"))),
+                None => Err(DeathpwnError::Provider(format!("{err_a:?}"))),
+            },
+        }
+    }
+
     async fn install(&self, tool: &str, cancel: &CancelToken) -> Result<String> {
-        let script = resolve_install_script(self.ai.as_ref(), tool).await?;
+        let req = crate::exec::installer::install_request(tool);
+        let raw = self.complete_failover(&req).await?;
+        let script = crate::exec::installer::sanitize_install(&raw);
+        if script.is_empty() {
+            return Err(DeathpwnError::Exec(format!(
+                "no install command produced for `{tool}`"
+            )));
+        }
         let out = self.runner.run_shell(&script, cancel.clone()).await;
         if out.exit == Some(0) {
             Ok(format!("installed via `{script}`"))
@@ -231,11 +281,7 @@ impl<R: CommandRunner> FeedbackLoop<R> {
             ),
             temperature: 0.0,
         };
-        let raw = self
-            .ai
-            .complete(&req)
-            .await
-            .map_err(|e| DeathpwnError::Provider(format!("{e:?}")))?;
+        let raw = self.complete_failover(&req).await?;
         let verdict: ExecFailureVerdict = serde_json::from_str(raw.trim())
             .map_err(|e| DeathpwnError::Schema(format!("exec failure verdict parse: {e}")))?;
         Ok(verdict)
@@ -408,5 +454,52 @@ mod tests {
         assert_eq!(runner.run_calls().len(), 2, "one transient retry");
         assert!(out.attempts.iter().any(|a| a.note.contains("transient")));
         assert_eq!(out.attempts.last().unwrap().note, "ok");
+    }
+
+    #[tokio::test]
+    async fn classify_fails_over_to_provider_b() {
+        // Provider A errors on the classify call; the loop must fail over to B
+        // (GOAL §8) rather than aborting the command. B's verdict (fixable_usage)
+        // then drives a corrected retry that succeeds.
+        let runner = FakeCommandRunner::new().available("nmap");
+        runner.push_run(fail(2, "unrecognized option '--badflag'"));
+        runner.push_run(ok("Nmap scan report for 10.0.0.1"));
+        let a = Arc::new(FakeAiProvider::scripted(vec![Err::<String, ProviderError>(
+            ProviderError::RateLimit,
+        )]));
+        let b = Arc::new(FakeAiProvider::scripted(vec![Ok::<String, ProviderError>(
+            fixable_json(),
+        )]));
+
+        let fb = FeedbackLoop::with_failover(runner.clone(), a.clone(), b.clone(), 2);
+        let spec = CommandSpec {
+            tool: "nmap".into(),
+            argv: vec!["nmap".into(), "--badflag".into(), "10.0.0.1".into()],
+        };
+        let out = fb.run(&spec, CancelToken::new()).await.unwrap();
+
+        assert_eq!(out.outcome.exit, Some(0), "corrected retry succeeds");
+        assert_eq!(a.call_count(), 1, "provider A was tried");
+        assert_eq!(b.call_count(), 1, "provider B handled the failover");
+        assert_eq!(runner.run_calls().len(), 2, "initial run + corrected retry");
+    }
+
+    #[tokio::test]
+    async fn classify_without_fallback_surfaces_provider_error() {
+        // No fallback configured: a provider error on classify is surfaced as a
+        // DeathpwnError rather than silently swallowed.
+        let runner = FakeCommandRunner::new().available("nmap");
+        runner.push_run(fail(2, "boom"));
+        let ai = Arc::new(FakeAiProvider::scripted(vec![Err::<String, ProviderError>(
+            ProviderError::Timeout,
+        )]));
+
+        let fb = FeedbackLoop::new(runner.clone(), ai.clone(), 2);
+        let spec = CommandSpec {
+            tool: "nmap".into(),
+            argv: vec!["nmap".into(), "x".into()],
+        };
+        let err = fb.run(&spec, CancelToken::new()).await.unwrap_err();
+        assert!(matches!(err, DeathpwnError::Provider(_)));
     }
 }

@@ -75,9 +75,10 @@ async fn main() -> Result<()> {
         provider_b.clone(),
         clock.clone(),
     ));
-    let feedback = FeedbackLoop::new(
+    let feedback = FeedbackLoop::with_failover(
         ShellRunner::new(config.shell.clone()),
         provider_a.clone(),
+        provider_b.clone(),
         config.max_corrections,
     );
     let engine_ai =

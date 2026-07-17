@@ -8,16 +8,28 @@ Given a missing command-line tool, reply with ONLY the single shell command that
 installs it (e.g. `pacman -S --noconfirm nmap`, an AUR helper invocation, or \
 `go install ...`). No prose, no explanation, no code fences.";
 
-/// Ask the AI for the BlackArch install command for `tool` and return the
-/// sanitized shell script to run. Errors if the model returns nothing usable.
-pub async fn resolve_install_script(ai: &dyn AiProvider, tool: &str) -> Result<String> {
-    let req = ChatRequest {
+/// Build the install-resolution request for `tool`. Exposed so the feedback
+/// loop can route it through its own provider failover (GOAL.md §8).
+pub(crate) fn install_request(tool: &str) -> ChatRequest {
+    ChatRequest {
         system: INSTALL_SYSTEM.to_string(),
         user: format!(
             "Missing tool: {tool}\nReturn only the shell command to install it on BlackArch Linux."
         ),
         temperature: 0.0,
-    };
+    }
+}
+
+/// Sanitize a raw model reply into a runnable install command (public alias of
+/// [`sanitize`] for the feedback loop's failover path).
+pub(crate) fn sanitize_install(raw: &str) -> String {
+    sanitize(raw)
+}
+
+/// Ask the AI for the BlackArch install command for `tool` and return the
+/// sanitized shell script to run. Errors if the model returns nothing usable.
+pub async fn resolve_install_script(ai: &dyn AiProvider, tool: &str) -> Result<String> {
+    let req = install_request(tool);
     let raw = ai
         .complete(&req)
         .await
