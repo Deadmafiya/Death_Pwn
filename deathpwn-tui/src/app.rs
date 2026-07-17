@@ -20,22 +20,6 @@ use crate::ui;
 /// Lines scrolled per PageUp / PageDown.
 const PAGE: u16 = 10;
 
-/// Spinner animation frames (braille-based, smooth rotation).
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// Map a Phase color key to a ratatui Color.
-fn phase_color(phase: &Phase) -> Color {
-    match phase.color_key() {
-        "darkgray" => Color::DarkGray,
-        "blue" => Color::Blue,
-        "yellow" => Color::Yellow,
-        "magenta" => Color::Magenta,
-        "cyan" => Color::Cyan,
-        "lightred" => Color::LightRed,
-        _ => Color::Gray,
-    }
-}
-
 /// One unit of work sent from the UI to the engine task: the raw input line
 /// plus the cancel token the UI keeps a clone of (so Ctrl+C reaches the child).
 pub struct Job {
@@ -43,8 +27,7 @@ pub struct Job {
     pub cancel: CancelToken,
 }
 
-/// The bottom status bar: current target, goal step count, active provider,
-/// current pipeline phase with animated spinner (only when running).
+/// Status bar state shared with the telemetry pane.
 pub struct StatusBar {
     pub target: Option<String>,
     pub steps: u32,
@@ -70,48 +53,13 @@ impl StatusBar {
     pub fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
     }
-
-    /// Render the status bar as a single styled line.
-    pub fn line(&self) -> Line<'static> {
-        let target = self.target.clone().unwrap_or_else(|| "-".to_string());
-        let color = phase_color(&self.phase);
-
-        let phase_part: Span = if self.running {
-            let frame = SPINNER[self.spinner_tick % SPINNER.len()];
-            Span::styled(
-                format!("{} {}", frame, self.phase.label()),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("◼ ready", Style::default().fg(Color::DarkGray))
-        };
-
-        Line::from(vec![
-            phase_part,
-            Span::raw("  "),
-            Span::styled("target:", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(target, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled("steps:", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(self.steps.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::raw("  "),
-            Span::styled("provider:", Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(self.provider.clone(), Style::default().fg(Color::Green)),
-        ])
-    }
 }
 
-/// All UI state. `output` is the terminal output pane; `log_lines` is the
-/// left-side activity log (phase banners); `current_render` holds the most
-/// recent structured `Stage4Render`.
+/// All UI state.
 pub struct App {
     pub input: String,
+    pub cursor_pos: usize,
     pub output: Vec<Line<'static>>,
-    #[allow(dead_code)]
-    pub log_lines: Vec<Line<'static>>,
     pub status: StatusBar,
     pub scroll: u16,
     pub should_quit: bool,
@@ -125,8 +73,8 @@ impl App {
     pub fn new(cmd_tx: mpsc::Sender<Job>, status: StatusBar) -> Self {
         Self {
             input: String::new(),
+            cursor_pos: 0,
             output: Vec::new(),
-            log_lines: Vec::new(),
             status,
             scroll: 0,
             should_quit: false,
@@ -137,8 +85,7 @@ impl App {
         }
     }
 
-    /// Handle one key press. Pure state mutation plus non-blocking channel/token
-    /// side effects — safe to call from tests without a runtime.
+    /// Handle one key press.
     pub fn handle_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match (key.code, ctrl) {
@@ -153,12 +100,39 @@ impl App {
                     self.should_quit = true;
                 }
             }
+            (KeyCode::Left, _) => {
+                if self.cursor_pos > 0 {
+                    self.cursor_pos -= 1;
+                }
+            }
+            (KeyCode::Right, _) => {
+                if self.cursor_pos < self.input.len() {
+                    self.cursor_pos += 1;
+                }
+            }
+            (KeyCode::Home, _) => {
+                self.cursor_pos = 0;
+            }
+            (KeyCode::End, _) => {
+                self.cursor_pos = self.input.len();
+            }
             (KeyCode::PageUp, _) => self.scroll = self.scroll.saturating_sub(PAGE),
             (KeyCode::PageDown, _) => self.scroll = self.scroll.saturating_add(PAGE),
             (KeyCode::Backspace, _) => {
-                self.input.pop();
+                if self.cursor_pos > 0 {
+                    self.cursor_pos -= 1;
+                    self.input.remove(self.cursor_pos);
+                }
             }
-            (KeyCode::Char(c), false) => self.input.push(c),
+            (KeyCode::Delete, _) => {
+                if self.cursor_pos < self.input.len() {
+                    self.input.remove(self.cursor_pos);
+                }
+            }
+            (KeyCode::Char(c), false) => {
+                self.input.insert(self.cursor_pos, c);
+                self.cursor_pos += 1;
+            }
             _ => {}
         }
     }
@@ -185,8 +159,25 @@ impl App {
                 }
             }
             EngineEvent::Rendered(render) => {
+                self.output.push(Line::from(""));
+                self.output.push(Line::from(Span::styled(
+                    "⚡ [AI ANALYSIS INGESTED INTO LOG MATRIX] ─────────────────────────────",
+                    Style::default().fg(Color::Rgb(0, 255, 102)).add_modifier(Modifier::BOLD),
+                )));
+                self.output.push(Line::from(""));
+
                 self.output.extend(ui::stage4_to_lines(&render));
+
+                self.output.push(Line::from(Span::styled(
+                    "──────────────────────────────────────────────────────────────────────",
+                    Style::default().fg(Color::Rgb(38, 38, 38)),
+                )));
+
                 self.current_render = Some(render);
+
+                if self.output.len() > 10 {
+                    self.scroll = (self.output.len() as u16).saturating_sub(10);
+                }
             }
             EngineEvent::Error(msg) => {
                 self.output.push(Line::from(Span::styled(
@@ -219,13 +210,12 @@ impl App {
             return;
         }
         let line = std::mem::take(&mut self.input);
+        self.cursor_pos = 0;
         let cancel = CancelToken::new();
         self.cancel = cancel.clone();
         self.running = true;
         self.status.running = true;
         let job = Job { line, cancel };
-        // Non-blocking: the engine task drains jobs. A full queue drops input
-        // rather than stalling the UI thread.
         let _ = self.cmd_tx.try_send(job);
     }
 
@@ -236,14 +226,14 @@ impl App {
         }
     }
 
-    /// Ctrl+X: cancel the running command AND abandon the rest of the chain,
-    /// returning to a fresh prompt.
+    /// Ctrl+X: cancel the running command AND return to a fresh prompt.
     fn cancel_and_drain(&mut self) {
         self.cancel.cancel();
         self.running = false;
         self.status.running = false;
         self.status.phase = Phase::Idle;
         self.input.clear();
+        self.cursor_pos = 0;
     }
 }
 
@@ -328,8 +318,6 @@ mod tests {
         assert_eq!(app.status.target.as_deref(), Some("10.0.0.5"));
         assert_eq!(app.status.steps, 1);
 
-        // A later progress event with no target keeps the last known target but
-        // advances the step count.
         app.on_event(EngineEvent::Progress {
             target: None,
             step: 2,
