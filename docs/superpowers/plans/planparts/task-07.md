@@ -26,7 +26,7 @@ builds on.
   - `#[derive(Clone)] struct CancelToken` with `fn new() -> Self`, `fn cancel(&self)`, `fn is_cancelled(&self) -> bool`, and `async fn cancelled(&self)`
   - `#[async_trait] trait CommandRunner: Send + Sync { async fn run(&self, spec: &CommandSpec, cancel: CancelToken) -> RunOutcome; async fn run_shell(&self, script: &str, cancel: CancelToken) -> RunOutcome; }`
   - `struct ShellRunner { shell: String, tx: Option<mpsc::Sender<OutputLine>> }` implementing `CommandRunner` (spawns `$SHELL -c <script>` via `tokio::process::Command` with `.process_group(0)`; SIGTERM→SIGKILL to the group on cancel; streams lines on `tx` if present)
-  - test-support: `struct FakeCommandRunner` (scripted `RunOutcome` sequence, records inputs) implementing `CommandRunner`, gated `#[cfg(any(test, feature = "test-support"))]` and re-exported
+  - test-support: `struct FakeCommandRunner` — a comprehensive `CommandRunner` double implementing `CommandRunner`, gated `#[cfg(any(test, feature = "test-support"))]` and re-exported. State: `run_outcomes`/`shell_outcomes` (separate FIFO `RunOutcome` queues for `run()` / non-probe `run_shell()`), `available` (tool set for `command -v` probes), `constant` (single outcome that wins when set), and `run_calls`/`shell_calls` (recorded inputs). `run_shell()` treats any script containing `"command -v"` as an availability probe: the last shell-word (leading `--` stripped) is the tool, returning exit 0 if in `available` else 127. Exhausted queues fall back to `default_ok()` (exit 0, empty streams, not cancelled). Surface: `new()`, `with_outcomes(Vec<RunOutcome>)`, `available(self, tool: impl Into<String>)`, `always(RunOutcome)`, `push`/`push_run`/`push_shell(&self, RunOutcome)`, `calls() -> Vec<String>`, `run_calls() -> Vec<CommandSpec>`, `shell_calls() -> Vec<String>`
 
 ---
 
@@ -251,7 +251,7 @@ mod tests {
             stderr: String::new(),
             cancelled: false,
         });
-        fake.push(RunOutcome {
+        fake.push_shell(RunOutcome {
             exit: Some(1),
             stdout: String::new(),
             stderr: "boom".to_string(),
@@ -266,23 +266,66 @@ mod tests {
         assert_eq!(a.exit, Some(0));
         assert_eq!(a.stdout, "first");
 
-        let b = fake.run_shell("command -v -- nmap", CancelToken::new()).await;
+        // A non-probe shell script pops the separate shell queue.
+        let b = fake.run_shell("echo boom", CancelToken::new()).await;
         assert_eq!(b.exit, Some(1));
         assert_eq!(b.stderr, "boom");
 
-        // Inputs are recorded so consumers (detector, feedback loop) can assert.
+        // Inputs are recorded so consumers (detector, feedback loop) can assert:
+        // run() specs (rendered "tool arg…") first, then run_shell() scripts.
         let calls = fake.calls();
         assert_eq!(calls[0], "nmap -sV host");
-        assert_eq!(calls[1], "command -v -- nmap");
+        assert_eq!(calls[1], "echo boom");
+        assert_eq!(fake.run_calls().len(), 1);
+        assert_eq!(fake.shell_calls(), vec!["echo boom".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fake_probe_reports_availability() {
+        let fake = FakeCommandRunner::new().available("nmap");
+
+        // Known tool → exit 0. The tool is the last shell-word, leading `--` stripped.
+        let hit = fake
+            .run_shell("command -v -- nmap", CancelToken::new())
+            .await;
+        assert_eq!(hit.exit, Some(0));
+
+        // Unknown tool → 127 (the detector maps this to RawInput).
+        let miss = fake
+            .run_shell("command -v -- unknown", CancelToken::new())
+            .await;
+        assert_eq!(miss.exit, Some(127));
     }
 
     #[tokio::test]
     async fn fake_defaults_to_success_when_script_exhausted() {
         let fake = FakeCommandRunner::new();
-        let out = fake.run_shell("command -v -- ls", CancelToken::new()).await;
+        let out = fake.run_shell("echo hi", CancelToken::new()).await;
         assert_eq!(out.exit, Some(0));
         assert!(!out.cancelled);
         assert_eq!(out.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn fake_always_returns_constant() {
+        let fake = FakeCommandRunner::always(RunOutcome {
+            exit: Some(42),
+            stdout: "k".to_string(),
+            stderr: String::new(),
+            cancelled: false,
+        });
+        let spec = CommandSpec {
+            tool: "whatever".to_string(),
+            argv: vec![],
+        };
+        assert_eq!(fake.run(&spec, CancelToken::new()).await.exit, Some(42));
+        // Constant wins even over the probe branch.
+        assert_eq!(
+            fake.run_shell("command -v -- nmap", CancelToken::new())
+                .await
+                .exit,
+            Some(42)
+        );
     }
 
     #[test]
@@ -360,7 +403,7 @@ pub use test_support::FakeCommandRunner;
 
 #[cfg(any(test, feature = "test-support"))]
 mod test_support {
-    use std::collections::VecDeque;
+    use std::collections::{HashSet, VecDeque};
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -368,66 +411,147 @@ mod test_support {
     use super::{CommandRunner, CommandSpec, RunOutcome};
     use crate::cancel::CancelToken;
 
-    /// A scriptable [`CommandRunner`] double. Returns pushed outcomes in FIFO
-    /// order (falling back to a success outcome when exhausted) and records the
-    /// textual form of every input so consumers can assert on what was run.
+    /// A comprehensive [`CommandRunner`] double serving the detector
+    /// (availability probes), the feedback loop (separate run/shell queues plus
+    /// availability), and the engine (a single constant outcome). Every input is
+    /// recorded so consumers can assert on what was run.
     #[derive(Default)]
     pub struct FakeCommandRunner {
-        scripted: Mutex<VecDeque<RunOutcome>>,
-        calls: Mutex<Vec<String>>,
+        run_outcomes: Mutex<VecDeque<RunOutcome>>,
+        shell_outcomes: Mutex<VecDeque<RunOutcome>>,
+        available: Mutex<HashSet<String>>,
+        constant: Mutex<Option<RunOutcome>>,
+        run_calls: Mutex<Vec<CommandSpec>>,
+        shell_calls: Mutex<Vec<String>>,
+    }
+
+    /// The fallback outcome for an exhausted queue: exit 0, empty streams, not cancelled.
+    fn default_ok() -> RunOutcome {
+        RunOutcome {
+            exit: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            cancelled: false,
+        }
     }
 
     impl FakeCommandRunner {
+        /// Empty double: all queues empty, no constant, nothing available.
         pub fn new() -> Self {
             Self::default()
         }
 
-        /// Pre-load outcomes to be returned in order.
+        /// Pre-load `run()` outcomes to be returned in order.
         pub fn with_outcomes(outcomes: Vec<RunOutcome>) -> Self {
             let runner = Self::new();
             for o in outcomes {
-                runner.push(o);
+                runner.push_run(o);
             }
             runner
         }
 
-        /// Queue one outcome for the next call.
+        /// Builder: mark `tool` as present for `command -v` probes.
+        pub fn available(self, tool: impl Into<String>) -> Self {
+            self.available.lock().unwrap().insert(tool.into());
+            self
+        }
+
+        /// A double whose every `run()`/`run_shell()` returns `outcome` (wins even
+        /// over the probe branch).
+        pub fn always(outcome: RunOutcome) -> Self {
+            let runner = Self::new();
+            *runner.constant.lock().unwrap() = Some(outcome);
+            runner
+        }
+
+        /// Queue one outcome for the next `run()` (alias of [`push_run`]).
         pub fn push(&self, outcome: RunOutcome) {
-            self.scripted.lock().unwrap().push_back(outcome);
+            self.push_run(outcome);
         }
 
-        /// The textual inputs recorded so far, in call order.
+        /// Queue one outcome for the next `run()`.
+        pub fn push_run(&self, outcome: RunOutcome) {
+            self.run_outcomes.lock().unwrap().push_back(outcome);
+        }
+
+        /// Queue one outcome for the next non-probe `run_shell()`.
+        pub fn push_shell(&self, outcome: RunOutcome) {
+            self.shell_outcomes.lock().unwrap().push_back(outcome);
+        }
+
+        /// All calls in order: `run()` specs rendered as `"tool arg…"` first, then
+        /// `run_shell()` scripts.
         pub fn calls(&self) -> Vec<String> {
-            self.calls.lock().unwrap().clone()
-        }
-
-        fn next(&self, recorded: String) -> RunOutcome {
-            self.calls.lock().unwrap().push(recorded);
-            self.scripted
+            let mut all: Vec<String> = self
+                .run_calls
                 .lock()
                 .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| RunOutcome {
-                    exit: Some(0),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    cancelled: false,
-                })
+                .iter()
+                .map(render_spec)
+                .collect();
+            all.extend(self.shell_calls.lock().unwrap().iter().cloned());
+            all
         }
+
+        /// Recorded `run()` specs, in call order.
+        pub fn run_calls(&self) -> Vec<CommandSpec> {
+            self.run_calls.lock().unwrap().clone()
+        }
+
+        /// Recorded `run_shell()` scripts, in call order.
+        pub fn shell_calls(&self) -> Vec<String> {
+            self.shell_calls.lock().unwrap().clone()
+        }
+    }
+
+    /// Render a spec as `"tool arg1 arg2"`.
+    fn render_spec(spec: &CommandSpec) -> String {
+        std::iter::once(spec.tool.clone())
+            .chain(spec.argv.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     #[async_trait]
     impl CommandRunner for FakeCommandRunner {
         async fn run(&self, spec: &CommandSpec, _cancel: CancelToken) -> RunOutcome {
-            let recorded = std::iter::once(spec.tool.clone())
-                .chain(spec.argv.iter().cloned())
-                .collect::<Vec<_>>()
-                .join(" ");
-            self.next(recorded)
+            self.run_calls.lock().unwrap().push(spec.clone());
+            if let Some(c) = self.constant.lock().unwrap().clone() {
+                return c;
+            }
+            self.run_outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(default_ok)
         }
 
         async fn run_shell(&self, script: &str, _cancel: CancelToken) -> RunOutcome {
-            self.next(script.to_string())
+            self.shell_calls.lock().unwrap().push(script.to_string());
+            if let Some(c) = self.constant.lock().unwrap().clone() {
+                return c;
+            }
+            if script.contains("command -v") {
+                // Availability probe: the tool is the last shell-word (leading
+                // `--` stripped). Present → exit 0; absent → 127.
+                let tool = script
+                    .split_whitespace()
+                    .last()
+                    .map(|w| w.strip_prefix("--").unwrap_or(w))
+                    .unwrap_or("");
+                let present = self.available.lock().unwrap().contains(tool);
+                return RunOutcome {
+                    exit: Some(if present { 0 } else { 127 }),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    cancelled: false,
+                };
+            }
+            self.shell_outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(default_ok)
         }
     }
 }
@@ -446,7 +570,7 @@ mod tests {
             stderr: String::new(),
             cancelled: false,
         });
-        fake.push(RunOutcome {
+        fake.push_shell(RunOutcome {
             exit: Some(1),
             stdout: String::new(),
             stderr: "boom".to_string(),
@@ -461,22 +585,66 @@ mod tests {
         assert_eq!(a.exit, Some(0));
         assert_eq!(a.stdout, "first");
 
-        let b = fake.run_shell("command -v -- nmap", CancelToken::new()).await;
+        // A non-probe shell script pops the separate shell queue.
+        let b = fake.run_shell("echo boom", CancelToken::new()).await;
         assert_eq!(b.exit, Some(1));
         assert_eq!(b.stderr, "boom");
 
+        // Inputs are recorded so consumers (detector, feedback loop) can assert:
+        // run() specs (rendered "tool arg…") first, then run_shell() scripts.
         let calls = fake.calls();
         assert_eq!(calls[0], "nmap -sV host");
-        assert_eq!(calls[1], "command -v -- nmap");
+        assert_eq!(calls[1], "echo boom");
+        assert_eq!(fake.run_calls().len(), 1);
+        assert_eq!(fake.shell_calls(), vec!["echo boom".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn fake_probe_reports_availability() {
+        let fake = FakeCommandRunner::new().available("nmap");
+
+        // Known tool → exit 0. The tool is the last shell-word, leading `--` stripped.
+        let hit = fake
+            .run_shell("command -v -- nmap", CancelToken::new())
+            .await;
+        assert_eq!(hit.exit, Some(0));
+
+        // Unknown tool → 127 (the detector maps this to RawInput).
+        let miss = fake
+            .run_shell("command -v -- unknown", CancelToken::new())
+            .await;
+        assert_eq!(miss.exit, Some(127));
     }
 
     #[tokio::test]
     async fn fake_defaults_to_success_when_script_exhausted() {
         let fake = FakeCommandRunner::new();
-        let out = fake.run_shell("command -v -- ls", CancelToken::new()).await;
+        let out = fake.run_shell("echo hi", CancelToken::new()).await;
         assert_eq!(out.exit, Some(0));
         assert!(!out.cancelled);
         assert_eq!(out.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn fake_always_returns_constant() {
+        let fake = FakeCommandRunner::always(RunOutcome {
+            exit: Some(42),
+            stdout: "k".to_string(),
+            stderr: String::new(),
+            cancelled: false,
+        });
+        let spec = CommandSpec {
+            tool: "whatever".to_string(),
+            argv: vec![],
+        };
+        assert_eq!(fake.run(&spec, CancelToken::new()).await.exit, Some(42));
+        // Constant wins even over the probe branch.
+        assert_eq!(
+            fake.run_shell("command -v -- nmap", CancelToken::new())
+                .await
+                .exit,
+            Some(42)
+        );
     }
 
     #[test]
@@ -499,7 +667,7 @@ pub mod exec;
 pub use exec::{CommandRunner, CommandSpec, OutputLine, RunOutcome, ShellRunner, Stream};
 ```
 
-- [ ] **Step 10: Run test to verify it passes** — `cargo test -p deathpwn-core exec::`. Expected: **PASS** — `fake_returns_scripted_outcomes_in_order`, `fake_defaults_to_success_when_script_exhausted`, and `output_line_carries_stream_and_text` all pass.
+- [ ] **Step 10: Run test to verify it passes** — `cargo test -p deathpwn-core exec::`. Expected: **PASS** — `fake_returns_scripted_outcomes_in_order`, `fake_probe_reports_availability`, `fake_defaults_to_success_when_script_exhausted`, `fake_always_returns_constant`, and `output_line_carries_stream_and_text` all pass.
 
 - [ ] **Step 11: Commit** — `git add deathpwn-core/src/exec/mod.rs deathpwn-core/src/lib.rs` && `git commit -m "feat(deathpwn): add CommandRunner trait, exec types, and FakeCommandRunner"`.
 

@@ -1,5 +1,7 @@
 ### Task 6: detector — Step 0 (command-vs-raw resolution)
 
+> Implement AFTER Task 7 — consumes `CommandRunner`/`RunOutcome`/`CancelToken`/`FakeCommandRunner` defined there.
+
 **Files:**
 - Create: `deathpwn-core/src/detector/mod.rs` (core crate; `InputKind`, `Detector`, unit tests in a `#[cfg(test)] mod tests` in the same file)
 - Modify: `deathpwn-core/src/lib.rs` (core crate; add `pub mod detector;`)
@@ -13,7 +15,7 @@
   - `struct CommandSpec { tool: String, argv: Vec<String> }` (part of the trait surface; not called directly here)
   - `#[derive(Clone)] struct CancelToken(/* … */)` with `fn CancelToken::new() -> CancelToken`, `fn cancel(&self)`, `fn is_cancelled(&self) -> bool`, and an async `cancelled()` future. Task 6 uses `CancelToken::new()` only (a fresh, un-cancelled token for the `command -v` probe).
   - `#[async_trait] trait CommandRunner: Send + Sync { async fn run(&self, spec: &CommandSpec, cancel: CancelToken) -> RunOutcome; async fn run_shell(&self, script: &str, cancel: CancelToken) -> RunOutcome; }` — Task 6 calls only `run_shell`.
-  - test-support (from Task 7, re-exported for cross-task use): `struct FakeCommandRunner` scripting `input → RunOutcome`. Task 6 relies on this builder surface: `FakeCommandRunner::new()` and `.on_shell(script: &str, outcome: RunOutcome) -> Self` (exact-match map on the `run_shell` script argument); any unmatched `run_shell` call returns the miss default `RunOutcome { exit: Some(127), stdout: String::new(), stderr: String::new(), cancelled: false }` (POSIX "command not found"). This is the "scripted by token→exit" fake named in the manifest.
+  - test-support (from Task 7, re-exported for cross-task use): `struct FakeCommandRunner` with an availability set for `command -v` probes. Task 6 relies on this builder surface: `FakeCommandRunner::new()` and `.available(tool: impl Into<String>) -> Self` (adds `tool` to the availability set). A `command -v` probe for a tool in the set returns `exit: Some(0)`; any token not added returns the miss default `RunOutcome { exit: Some(127), stdout: String::new(), stderr: String::new(), cancelled: false }` (POSIX "command not found"). This is the availability-probe fake named in the manifest.
 
 - Produces (later tasks — Task 15 `engine.rs` — rely on these):
   - `enum InputKind { DirectCommand, RawInput }` (`#[derive(Debug, Clone, Copy, PartialEq, Eq)]`)
@@ -150,20 +152,12 @@
 
 - [ ] **Step 7: Write the failing test** — add resolution behaviors: known command → `DirectCommand`, unknown leading token → `RawInput`, the leading token (not the whole line) drives the decision through a pipe, quoted tokens are resolved with correct shell-quoting, and unbalanced quotes fall back to `RawInput`.
 
-  Add these tests inside the existing `#[cfg(test)] mod tests` block in `deathpwn-core/src/detector/mod.rs`, and extend its imports to `use crate::exec::{FakeCommandRunner, RunOutcome};`:
+  Add these tests inside the existing `#[cfg(test)] mod tests` block in `deathpwn-core/src/detector/mod.rs` (imports are unchanged — these tests build fakes with `FakeCommandRunner::new().available(...)`, no `RunOutcome` needed):
 
   ```rust
       #[tokio::test]
       async fn known_command_is_direct_command() {
-          let runner = FakeCommandRunner::new().on_shell(
-              "command -v -- nmap",
-              RunOutcome {
-                  exit: Some(0),
-                  stdout: "/usr/bin/nmap\n".to_string(),
-                  stderr: String::new(),
-                  cancelled: false,
-              },
-          );
+          let runner = FakeCommandRunner::new().available("nmap");
           let detector = Detector::new(runner, "/bin/sh".to_string());
           assert_eq!(
               detector.classify("nmap -sV 10.0.0.1").await,
@@ -185,15 +179,8 @@
       #[tokio::test]
       async fn leading_token_drives_decision_across_pipe() {
           // `foobar` is unknown even though the line parses as a shell construct.
-          let runner = FakeCommandRunner::new().on_shell(
-              "command -v -- baz",
-              RunOutcome {
-                  exit: Some(0),
-                  stdout: String::new(),
-                  stderr: String::new(),
-                  cancelled: false,
-              },
-          );
+          // `baz` is available, but it is not the leading token so it is never probed.
+          let runner = FakeCommandRunner::new().available("baz");
           let detector = Detector::new(runner, "/bin/sh".to_string());
           assert_eq!(
               detector.classify("foobar | baz").await,
@@ -203,15 +190,7 @@
 
       #[tokio::test]
       async fn quoted_leading_token_is_shell_quoted_before_resolution() {
-          let runner = FakeCommandRunner::new().on_shell(
-              "command -v -- 'my scanner'",
-              RunOutcome {
-                  exit: Some(0),
-                  stdout: String::new(),
-                  stderr: String::new(),
-                  cancelled: false,
-              },
-          );
+          let runner = FakeCommandRunner::new().available("my scanner");
           let detector = Detector::new(runner, "/bin/sh".to_string());
           assert_eq!(
               detector.classify("'my scanner' --fast").await,

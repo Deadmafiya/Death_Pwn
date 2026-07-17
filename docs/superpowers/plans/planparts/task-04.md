@@ -18,7 +18,7 @@
   - `trait Clock: Send + Sync { fn now_ms(&self) -> u64; }`
   - test-support (re-exported for other tasks): `struct FakeAiProvider` and `struct FakeClock`. This task relies on the following fake API (authored in Task 3):
     - `FakeAiProvider::new(label: &str, responses: Vec<std::result::Result<String, ProviderError>>) -> FakeAiProvider` — each `complete` call returns the next scripted result in FIFO order; `label()` returns the given label.
-    - `FakeClock::new(start_ms: u64) -> FakeClock` — implements `Clock`, returning `start_ms` from `now_ms()`.
+    - `FakeClock::new(times: Vec<u64>) -> FakeClock` (canonical) and `FakeClock::fixed(t: u64) -> FakeClock` (infinite constant `t`) — both implement `Clock`. This task uses `FakeClock::fixed(0)` for a constant clock returning `0` from `now_ms()`.
     - Assumed re-export paths: `crate::providers::{AiProvider, ChatRequest, ProviderError, FakeAiProvider}` and `crate::clock::{Clock, FakeClock}`.
 - Produces (later tasks 11–15 rely on these EXACT signatures):
   - `struct FailoverClient { a: Arc<dyn AiProvider>, b: Arc<dyn AiProvider>, clock: Arc<dyn Clock> }`
@@ -94,7 +94,7 @@ mod tests {
             "B",
             vec![Ok(r#"{"n":2}"#.to_string())],
         ));
-        let clock = Arc::new(FakeClock::new(0));
+        let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
         let out = client
@@ -190,7 +190,7 @@ git commit -m "feat(deathpwn): FailoverClient returns validated primary-provider
             "B",
             vec![Ok(r#"{"n":7}"#.to_string())],
         ));
-        let clock = Arc::new(FakeClock::new(0));
+        let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
         let out = client
@@ -281,7 +281,7 @@ git commit -m "feat(deathpwn): FailoverClient falls back to provider B on A erro
             "B",
             vec![Ok(r#"{"n":9}"#.to_string())],
         ));
-        let clock = Arc::new(FakeClock::new(0));
+        let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
         let out = client
@@ -371,7 +371,7 @@ git commit -m "feat(deathpwn): FailoverClient fails over to B when A output fail
             "B",
             vec![Ok("garbage".to_string())],
         ));
-        let clock = Arc::new(FakeClock::new(0));
+        let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
         let err = client

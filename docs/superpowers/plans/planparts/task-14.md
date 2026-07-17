@@ -14,7 +14,7 @@
   - `struct RunOutcome { exit: Option<i32>, stdout: String, stderr: String, cancelled: bool }` (Task 7)
   - `struct Stage1Understanding { intent: String, params: IntentParams, mode: Mode, goal_summary: String }` and `struct Stage4Render { sections: Vec<RenderSection> }` (Task 2)
   - `enum DeathpwnError { ... Provider(String) ... }` and `type Result<T> = std::result::Result<T, DeathpwnError>;` (Task 1)
-  - test-support `FakeAiProvider::new(label: impl Into<String>, script: Vec<std::result::Result<String, ProviderError>>)` and `FakeClock::new(start_ms: u64)` (Task 3)
+  - test-support `FakeAiProvider::new(label: impl Into<String>, script: Vec<std::result::Result<String, ProviderError>>)` and `FakeClock::new(times: Vec<u64>)` (canonical) / `FakeClock::fixed(t: u64)` for a constant clock (Task 3)
 - Produces (later tasks — Task 15 engine — rely on these EXACT signatures):
   - `struct Render { ai: FailoverClient }`
   - `impl Render { fn new(ai: FailoverClient) -> Self }`
@@ -185,7 +185,7 @@ Stage 4 turns a command's `RunOutcome` (plus the originating intent) into a type
 
       let a: Arc<dyn AiProvider> = Arc::new(FakeAiProvider::new("A", vec![Ok(canned)]));
       let b: Arc<dyn AiProvider> = Arc::new(FakeAiProvider::new("B", vec![]));
-      let clock = Arc::new(FakeClock::new(0));
+      let clock = Arc::new(FakeClock::fixed(0));
       let render = Render::new(FailoverClient::new(a, b, clock));
 
       let got = render.run(&u, &outcome).await.expect("stage 4 should succeed");
@@ -208,7 +208,7 @@ Stage 4 turns a command's `RunOutcome` (plus the originating intent) into a type
           Arc::new(FakeAiProvider::new("A", vec![Ok("not json".to_string())]));
       let b: Arc<dyn AiProvider> =
           Arc::new(FakeAiProvider::new("B", vec![Ok("also not json".to_string())]));
-      let clock = Arc::new(FakeClock::new(0));
+      let clock = Arc::new(FakeClock::fixed(0));
       let render = Render::new(FailoverClient::new(a, b, clock));
 
       let err = render.run(&u, &outcome).await.expect_err("both providers invalid");

@@ -18,7 +18,7 @@ owned by Task 15 and constructed in the engine; Stage 1 returns
 
 - Consumes (exact signatures from earlier tasks — do not re-type):
   - Task 4: `struct FailoverClient { a: Arc<dyn AiProvider>, b: Arc<dyn AiProvider>, clock: Arc<dyn Clock> }`; constructor `FailoverClient::new(a: Arc<dyn AiProvider>, b: Arc<dyn AiProvider>, clock: Arc<dyn Clock>) -> FailoverClient`; and `async fn complete_validated<T, F>(&self, req: &ChatRequest, validate: F) -> Result<T> where F: Fn(&str) -> std::result::Result<T, String>`.
-  - Task 3: `struct ChatRequest { system: String, user: String, temperature: f32 }`; `#[async_trait] trait AiProvider: Send + Sync`; `trait Clock: Send + Sync`; test-support fakes `FakeAiProvider` (constructor `FakeAiProvider::ok(&str) -> FakeAiProvider` returns that content on every `complete`) and `FakeClock` (`FakeClock::new(u64) -> FakeClock`), both re-exported behind `#[cfg(any(test, feature = "test-support"))]`.
+  - Task 3: `struct ChatRequest { system: String, user: String, temperature: f32 }`; `#[async_trait] trait AiProvider: Send + Sync`; `trait Clock: Send + Sync`; test-support fakes `FakeAiProvider` (constructor `FakeAiProvider::ok(&str) -> FakeAiProvider` returns that content on every `complete`) and `FakeClock` (`FakeClock::new(Vec<u64>) -> FakeClock` canonical; `FakeClock::fixed(u64) -> FakeClock` for a constant clock), both re-exported behind `#[cfg(any(test, feature = "test-support"))]`.
   - Task 2: `struct Stage1Understanding { intent: String, params: IntentParams, mode: Mode, goal_summary: String }`; `struct IntentParams { target: Option<String>, ports: Option<String>, url: Option<String>, extra: BTreeMap<String,String> }`; `enum Mode { SingleCommand, GoalCompletion }` (`#[serde(rename_all = "snake_case")]` → `single_command` / `goal_completion`).
   - Task 9: `struct SessionState { targets: Vec<Target>, hosts: Vec<String>, ports_by_host: BTreeMap<String,Vec<u16>>, services: Vec<String>, findings: Vec<Finding>, command_log: Vec<String> }` with `new()`, `add_target(&mut self, target: Target)`, `add_ports(&mut self, host: &str, ports: Vec<u16>)`, and field getters `targets()`, `hosts()`, `ports_by_host()`, `services()`, `findings()`; `struct Target { value: String }` (public `value` field).
   - Task 1: `type Result<T> = std::result::Result<T, DeathpwnError>;` (in `crate::error`).
@@ -225,7 +225,7 @@ Reuse the target/ports/url from the session context when the request refers to t
       fn failover(a_resp: &str, b_resp: &str) -> FailoverClient {
           let a: Arc<dyn AiProvider> = Arc::new(FakeAiProvider::ok(a_resp));
           let b: Arc<dyn AiProvider> = Arc::new(FakeAiProvider::ok(b_resp));
-          FailoverClient::new(a, b, Arc::new(FakeClock::new(0)))
+          FailoverClient::new(a, b, Arc::new(FakeClock::fixed(0)))
       }
 
       #[tokio::test]

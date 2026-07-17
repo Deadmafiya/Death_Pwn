@@ -45,9 +45,11 @@ channel.
 > `Retrieve::new(ai, search)`, `Plan::new(ai)`, `Render::new(ai)`,
 > `SessionState::new()`, `PlanCache::new()`, `FailoverClient::new(a, b, clock)`,
 > `CancelToken::new()`, and Task 3/5/7 fakes exposing
-> `FakeAiProvider::always(&str)` (same response every call),
-> `FakeAiProvider::scripted(Vec<String>)` (each response once, then repeats the
-> last), `FakeClock::new()`, `FakeCommandRunner::always(RunOutcome)`,
+> `FakeAiProvider::always(&str)` (infinite `Ok(body)`, same response every call),
+> `FakeAiProvider::scripted_ok(Vec<String>)` (FIFO of `Ok(body)`; panics
+> `"FakeAiProvider exhausted"` when the script runs out), `FakeClock::fixed(0)`
+> (infinite constant `0`; `FakeClock::new` takes `Vec<u64>`),
+> `FakeCommandRunner::always(RunOutcome)` (sets the constant outcome),
 > `FakeSearchProvider::empty()`. `Config`/`ProviderConfig` have public fields
 > (spec §3: "Tests build `Config` directly").
 
@@ -193,15 +195,15 @@ mod tests {
         FailoverClient::new(
             Arc::new(FakeAiProvider::always(response)),
             Arc::new(FakeAiProvider::always("{}")),
-            Arc::new(FakeClock::new()),
+            Arc::new(FakeClock::fixed(0)),
         )
     }
 
     fn scripted_failover(responses: Vec<String>) -> FailoverClient {
         FailoverClient::new(
-            Arc::new(FakeAiProvider::scripted(responses)),
+            Arc::new(FakeAiProvider::scripted_ok(responses)),
             Arc::new(FakeAiProvider::always("{}")),
-            Arc::new(FakeClock::new()),
+            Arc::new(FakeClock::fixed(0)),
         )
     }
 
@@ -246,7 +248,7 @@ mod tests {
         let render = Render::new(failover(RENDER_JSON));
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let clock = FakeClock::new();
+        let clock = FakeClock::fixed(0);
         let artifacts = Artifacts::open(tmp.path().to_path_buf(), &clock).expect("artifacts");
 
         let config = Config {

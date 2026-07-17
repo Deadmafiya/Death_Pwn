@@ -42,7 +42,7 @@
 
 **Fake contract this task relies on** (aligns with Tasks 3 & 7 — the fake authors must expose exactly these):
 - `FakeAiProvider::scripted(responses: Vec<std::result::Result<String, ProviderError>>) -> FakeAiProvider` — hands out responses in call order; `fn calls(&self) -> usize` returns how many times `complete` was invoked (shared via interior `Arc<Mutex<_>>` so clones/`Arc` wrapping observe the same counter).
-- `FakeCommandRunner::new() -> FakeCommandRunner` (`Clone`, interior-shared state) with builder methods `available(self, tool: &str) -> Self` (marks `command -v` for that tool as exit 0), `push_run(self, RunOutcome) -> Self` (enqueue next `run()` result), `push_shell(self, RunOutcome) -> Self` (enqueue next non-`command -v` `run_shell()` result); and observers `fn run_calls(&self) -> Vec<CommandSpec>`, `fn shell_calls(&self) -> Vec<String>`. `run_shell` scripts containing `command -v` consult the availability set; other `run_shell` calls (installs) pop the shell queue.
+- `FakeCommandRunner::new() -> FakeCommandRunner` (`Clone`, interior-shared state) with builder method `available(self, tool: impl Into<String>) -> Self` (marks `command -v` for that tool as exit 0), interior-mutable enqueue methods `push_run(&self, outcome: RunOutcome)` (enqueue next `run()` result), `push_shell(&self, outcome: RunOutcome)` (enqueue next non-`command -v` `run_shell()` result); and observers `fn run_calls(&self) -> Vec<CommandSpec>`, `fn shell_calls(&self) -> Vec<String>`. `run_shell` scripts containing `command -v` consult the availability set; other `run_shell` calls (installs) pop the shell queue.
 - `CancelToken::new() -> CancelToken` (real type from Task 7).
 
 ---
@@ -184,10 +184,9 @@
 
       #[tokio::test]
       async fn fixable_usage_applies_correction_and_retries() {
-          let runner = FakeCommandRunner::new()
-              .available("nmap")
-              .push_run(fail(2, "unrecognized option '--badflag'"))
-              .push_run(ok("Nmap scan report for 10.0.0.1"));
+          let runner = FakeCommandRunner::new().available("nmap");
+          runner.push_run(fail(2, "unrecognized option '--badflag'"));
+          runner.push_run(ok("Nmap scan report for 10.0.0.1"));
           let ai = Arc::new(FakeAiProvider::scripted(vec![
               Ok::<String, ProviderError>(fixable_json()),
           ]));
@@ -214,11 +213,10 @@
 
       #[tokio::test]
       async fn correction_cap_halts_retries() {
-          let runner = FakeCommandRunner::new()
-              .available("nmap")
-              .push_run(fail(2, "bad"))
-              .push_run(fail(2, "bad"))
-              .push_run(fail(2, "bad"));
+          let runner = FakeCommandRunner::new().available("nmap");
+          runner.push_run(fail(2, "bad"));
+          runner.push_run(fail(2, "bad"));
+          runner.push_run(fail(2, "bad"));
           let ai = Arc::new(FakeAiProvider::scripted(vec![
               Ok::<String, ProviderError>(fixable_json()),
               Ok::<String, ProviderError>(fixable_json()),
@@ -439,9 +437,9 @@
       #[tokio::test]
       async fn missing_tool_is_installed_then_run() {
           // No `.available(...)` → `command -v` reports the tool missing.
-          let runner = FakeCommandRunner::new()
-              .push_shell(ok("")) // install command result (run_shell, not `command -v`)
-              .push_run(ok("Nmap scan report for 10.0.0.1")); // the retried command
+          let runner = FakeCommandRunner::new();
+          runner.push_shell(ok("")); // install command result (run_shell, not `command -v`)
+          runner.push_run(ok("Nmap scan report for 10.0.0.1")); // the retried command
           let ai = Arc::new(FakeAiProvider::scripted(vec![
               Ok::<String, ProviderError>("pacman -S --noconfirm nmap".to_string()),
           ]));
@@ -559,9 +557,8 @@
   ```rust
       #[tokio::test]
       async fn benign_empty_is_reported_without_retry() {
-          let runner = FakeCommandRunner::new()
-              .available("grep")
-              .push_run(fail(1, ""));
+          let runner = FakeCommandRunner::new().available("grep");
+          runner.push_run(fail(1, ""));
           let ai = Arc::new(FakeAiProvider::scripted(vec![
               Ok::<String, ProviderError>(r#"{"class":"benign_empty","corrected_argv":null}"#.to_string()),
           ]));
@@ -581,9 +578,8 @@
 
       #[tokio::test]
       async fn fatal_stops_immediately() {
-          let runner = FakeCommandRunner::new()
-              .available("nmap")
-              .push_run(fail(1, "permission denied"));
+          let runner = FakeCommandRunner::new().available("nmap");
+          runner.push_run(fail(1, "permission denied"));
           let ai = Arc::new(FakeAiProvider::scripted(vec![
               Ok::<String, ProviderError>(r#"{"class":"fatal","corrected_argv":null}"#.to_string()),
           ]));
@@ -599,10 +595,9 @@
 
       #[tokio::test]
       async fn transient_retries_once_and_counts_toward_cap() {
-          let runner = FakeCommandRunner::new()
-              .available("nmap")
-              .push_run(fail(1, "temporary failure in name resolution"))
-              .push_run(ok("Nmap scan report for scanme.nmap.org"));
+          let runner = FakeCommandRunner::new().available("nmap");
+          runner.push_run(fail(1, "temporary failure in name resolution"));
+          runner.push_run(ok("Nmap scan report for scanme.nmap.org"));
           let ai = Arc::new(FakeAiProvider::scripted(vec![
               Ok::<String, ProviderError>(r#"{"class":"transient","corrected_argv":null}"#.to_string()),
           ]));

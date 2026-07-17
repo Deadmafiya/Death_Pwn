@@ -230,7 +230,7 @@ fn build_request(u: &Stage1Understanding, results: &[SearchResult]) -> ChatReque
         // Provider A succeeds with the canned JSON; B is present but never reached.
         let a = Arc::new(FakeAiProvider::with_script("A", vec![Ok(canned.to_string())]));
         let b = Arc::new(FakeAiProvider::with_script("B", vec![]));
-        let clock = Arc::new(FakeClock::new(0));
+        let clock = Arc::new(FakeClock::fixed(0));
         FailoverClient::new(a, b, clock)
     }
 

@@ -12,7 +12,7 @@
 - Consumes (exact signatures from earlier tasks):
   - Task 1: `type Result<T> = std::result::Result<T, DeathpwnError>;` (`crate::error::Result`); `DeathpwnError::Provider(String)` is the error returned when both providers fail.
   - Task 2: `struct Stage1Understanding { intent: String, params: IntentParams, mode: Mode, goal_summary: String }`; `struct IntentParams { target: Option<String>, ports: Option<String>, url: Option<String>, extra: BTreeMap<String,String> }`; `enum Mode { SingleCommand, GoalCompletion }`; `struct Stage2Knowledge { theory: String, candidates: Vec<CandidateCommand> }`; `struct CandidateCommand { tool: String, argv: Vec<String>, purpose: String }`; `struct Stage3Plan { commands: Vec<PlannedCommand> }`; `struct PlannedCommand { tool: String, argv: Vec<String>, purpose: String, depends_on_prev: bool }`.
-  - Task 3: `struct ChatRequest { system: String, user: String, temperature: f32 }`; test-support `FakeAiProvider` and `FakeClock` (re-exported from Task 3 as `crate::providers::FakeAiProvider` and `crate::clock::FakeClock`). Assumed test-support API from Task 3: `FakeAiProvider::with_responses(Vec<String>) -> FakeAiProvider` (returns each scripted string in order from `complete`), `FakeAiProvider::call_count(&self) -> usize` (interior-mutable counter, so an `Arc<FakeAiProvider>` clone still observes it), and `FakeClock::new(start_ms: u64) -> FakeClock`. Adjust the import paths/constructors only if Task 3 named them differently.
+  - Task 3: `struct ChatRequest { system: String, user: String, temperature: f32 }`; test-support `FakeAiProvider` and `FakeClock` (re-exported from Task 3 as `crate::providers::FakeAiProvider` and `crate::clock::FakeClock`). Test-support API from Task 3 (per the fake contract): `FakeAiProvider::with_responses(Vec<Result<String, ProviderError>>) -> FakeAiProvider` (pops each scripted `Result` in FIFO order from `complete`; label = `"fake"`), `FakeAiProvider::call_count(&self) -> usize` (interior-mutable counter, so an `Arc<FakeAiProvider>` clone still observes it), and `FakeClock::fixed(t: u64) -> FakeClock` (infinite constant clock; canonical `FakeClock::new` takes `Vec<u64>`).
   - Task 4: `struct FailoverClient { a: Arc<dyn AiProvider>, b: Arc<dyn AiProvider>, clock: Arc<dyn Clock> }` with `FailoverClient::new(a: Arc<dyn AiProvider>, b: Arc<dyn AiProvider>, clock: Arc<dyn Clock>) -> FailoverClient` and `async fn complete_validated<T, F>(&self, req: &ChatRequest, validate: F) -> Result<T> where F: Fn(&str) -> std::result::Result<T, String>`.
   - Task 9: `struct SessionState` with `SessionState::new()`.
   - Task 10: `struct PlanCache` with `PlanCache::new()`, `fn get(&self, intent: &str, params: &IntentParams) -> Option<&Stage3Plan>`, `fn put(&mut self, intent: &str, params: &IntentParams, plan: Stage3Plan)`.
@@ -84,7 +84,7 @@
       }
 
       fn failover_with(a: Arc<FakeAiProvider>, b: Arc<FakeAiProvider>) -> FailoverClient {
-          FailoverClient::new(a, b, Arc::new(FakeClock::new(0)))
+          FailoverClient::new(a, b, Arc::new(FakeClock::fixed(0)))
       }
 
       #[test]
@@ -99,8 +99,8 @@
 
       #[tokio::test]
       async fn run_calls_ai_and_parses_plan() {
-          let a = Arc::new(FakeAiProvider::with_responses(vec![plan_json()]));
-          let b = Arc::new(FakeAiProvider::with_responses(vec![plan_json()]));
+          let a = Arc::new(FakeAiProvider::with_responses(vec![Ok(plan_json())]));
+          let b = Arc::new(FakeAiProvider::with_responses(vec![Ok(plan_json())]));
           let stage = Plan::new(failover_with(a.clone(), b.clone()));
           let mut cache = PlanCache::new();
 
@@ -227,8 +227,8 @@ Output no prose and no markdown fences.";
       async fn second_identical_call_hits_cache() {
           // Two scripted responses per provider so a cache miss on the second call
           // would still succeed — this isolates the failure to the call count.
-          let a = Arc::new(FakeAiProvider::with_responses(vec![plan_json(), plan_json()]));
-          let b = Arc::new(FakeAiProvider::with_responses(vec![plan_json(), plan_json()]));
+          let a = Arc::new(FakeAiProvider::with_responses(vec![Ok(plan_json()), Ok(plan_json())]));
+          let b = Arc::new(FakeAiProvider::with_responses(vec![Ok(plan_json()), Ok(plan_json())]));
           let stage = Plan::new(failover_with(a.clone(), b.clone()));
           let mut cache = PlanCache::new();
           let u = understanding();

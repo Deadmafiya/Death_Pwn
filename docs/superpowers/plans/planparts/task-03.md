@@ -18,7 +18,7 @@
   - `trait Clock: Send + Sync { fn now_ms(&self) -> u64; }`
   - `struct SystemClock;` with `impl Clock for SystemClock`
   - `struct OpenAiClient { base_url, api_key, model, label, http }` with `OpenAiClient::new(base_url, api_key, model, label, http_timeout_secs: u64) -> crate::Result<Self>` and `impl AiProvider for OpenAiClient`
-  - test-support (behind `#[cfg(any(test, feature = "test-support"))]`, re-exported): `struct FakeAiProvider` with `new(label, responses: Vec<std::result::Result<String, ProviderError>>)` and `calls() -> usize`; `struct FakeClock` with `new(times: Vec<u64>)` and `fixed(t: u64)`.
+  - test-support (behind `#[cfg(any(test, feature = "test-support"))]`, re-exported): `struct FakeAiProvider` with state `label: String`, `responses: Mutex<VecDeque<Result<String, ProviderError>>>`, `constant: Option<Result<String, ProviderError>>`, `calls: AtomicUsize`. `complete()` behavior: if `constant` is set → clone it every call (infinite); else pop-front `responses`, and if empty → panic `"FakeAiProvider exhausted"`. Constructors/observers (all EXACT): `new(label: impl Into<String>, responses: Vec<Result<String, ProviderError>>)`, `scripted(responses: Vec<Result<String, ProviderError>>)` (label `"fake"`), `with_script(label, responses: Vec<Result<String, ProviderError>>)`, `with_responses(responses: Vec<Result<String, ProviderError>>)` (label `"fake"`, alias of `scripted`), `scripted_ok(bodies: Vec<String>)` (label `"fake"`, FIFO of `Ok`), `ok(body: impl Into<String>)` (infinite `Ok`, sets `constant`), `always(body: impl Into<String>)` (alias of `ok`), `calls() -> usize`, `call_count() -> usize` (alias of `calls`); `struct FakeClock` with `new(times: Vec<u64>)` and `fixed(t: u64)`.
 
 ---
 
@@ -61,12 +61,35 @@ mod tests {
 
         assert_eq!(fake.complete(&req).await, Ok("first".to_string()));
         assert_eq!(fake.complete(&req).await, Err(ProviderError::RateLimit));
-        // Exhausted script → deterministic default network error.
-        assert!(matches!(
-            fake.complete(&req).await,
-            Err(ProviderError::Network(_))
-        ));
-        assert_eq!(fake.calls(), 3);
+        assert_eq!(fake.calls(), 2);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "FakeAiProvider exhausted")]
+    async fn fake_provider_panics_when_script_exhausted() {
+        // Tests script exactly the expected number of calls; over-calling panics.
+        let fake = FakeAiProvider::scripted(vec![Ok("only".to_string())]);
+        let req = ChatRequest {
+            system: "s".to_string(),
+            user: "u".to_string(),
+            temperature: 0.0,
+        };
+        assert_eq!(fake.complete(&req).await, Ok("only".to_string()));
+        let _ = fake.complete(&req).await; // exhausted → panic
+    }
+
+    #[tokio::test]
+    async fn fake_provider_constant_mode_returns_same_body_forever() {
+        // `ok`/`always` set `constant` → infinite clone, never exhausts.
+        let fake = FakeAiProvider::ok("pong");
+        let req = ChatRequest {
+            system: "s".to_string(),
+            user: "u".to_string(),
+            temperature: 0.0,
+        };
+        assert_eq!(fake.complete(&req).await, Ok("pong".to_string()));
+        assert_eq!(fake.complete(&req).await, Ok("pong".to_string()));
+        assert_eq!(fake.call_count(), 2);
     }
 }
 ```
@@ -134,11 +157,14 @@ use std::sync::Mutex;
 pub struct FakeAiProvider {
     label: String,
     responses: Mutex<VecDeque<std::result::Result<String, ProviderError>>>,
+    /// If set, every `complete()` returns a clone of this forever (infinite mode).
+    constant: Option<std::result::Result<String, ProviderError>>,
     calls: AtomicUsize,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl FakeAiProvider {
+    /// Full control (canonical): labeled FIFO of Results.
     pub fn new(
         label: impl Into<String>,
         responses: Vec<std::result::Result<String, ProviderError>>,
@@ -146,14 +172,58 @@ impl FakeAiProvider {
         FakeAiProvider {
             label: label.into(),
             responses: Mutex::new(responses.into_iter().collect()),
+            constant: None,
             calls: AtomicUsize::new(0),
         }
+    }
+
+    /// label = `"fake"`, FIFO of Results.
+    pub fn scripted(responses: Vec<std::result::Result<String, ProviderError>>) -> Self {
+        FakeAiProvider::new("fake", responses)
+    }
+
+    /// Labeled FIFO of Results.
+    pub fn with_script(
+        label: impl Into<String>,
+        responses: Vec<std::result::Result<String, ProviderError>>,
+    ) -> Self {
+        FakeAiProvider::new(label, responses)
+    }
+
+    /// label = `"fake"`, FIFO of Results (behaviorally identical to `scripted`).
+    pub fn with_responses(responses: Vec<std::result::Result<String, ProviderError>>) -> Self {
+        FakeAiProvider::new("fake", responses)
+    }
+
+    /// label = `"fake"`, FIFO of `Ok(body)`.
+    pub fn scripted_ok(bodies: Vec<String>) -> Self {
+        FakeAiProvider::new("fake", bodies.into_iter().map(Ok).collect())
+    }
+
+    /// Infinite `Ok(body)` — sets `constant`, never exhausts.
+    pub fn ok(body: impl Into<String>) -> Self {
+        FakeAiProvider {
+            label: "fake".to_string(),
+            responses: Mutex::new(VecDeque::new()),
+            constant: Some(Ok(body.into())),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// Infinite `Ok(body)` — alias of `ok`.
+    pub fn always(body: impl Into<String>) -> Self {
+        FakeAiProvider::ok(body)
     }
 
     /// Number of times `complete` has been invoked (used to assert failover /
     /// cache behavior in later tasks).
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
+    }
+
+    /// Alias of `calls()`.
+    pub fn call_count(&self) -> usize {
+        self.calls()
     }
 }
 
@@ -162,11 +232,16 @@ impl FakeAiProvider {
 impl AiProvider for FakeAiProvider {
     async fn complete(&self, _req: &ChatRequest) -> std::result::Result<String, ProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        // Infinite mode: clone the constant every call.
+        if let Some(constant) = &self.constant {
+            return constant.clone();
+        }
+        // Otherwise pop the FIFO; scripts must cover exactly the expected calls.
         self.responses
             .lock()
             .expect("FakeAiProvider responses mutex poisoned")
             .pop_front()
-            .unwrap_or_else(|| Err(ProviderError::Network("no scripted response".to_string())))
+            .expect("FakeAiProvider exhausted")
     }
 
     fn label(&self) -> &str {

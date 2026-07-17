@@ -11,7 +11,7 @@
 - Consumes:
   - `struct RunOutcome { exit: Option<i32>, stdout: String, stderr: String, cancelled: bool }` — from Task 7, path `crate::exec::RunOutcome`.
   - `trait Clock: Send + Sync { fn now_ms(&self) -> u64; }` — from Task 3, path `crate::clock::Clock`.
-  - `struct FakeClock` — Task 3 test-support fake (available under `#[cfg(any(test, feature="test-support"))]`), path `crate::clock::FakeClock`. Assumed constructor `FakeClock::new(now_ms: u64)` whose `now_ms()` returns that fixed value.
+  - `struct FakeClock` — Task 3 test-support fake (available under `#[cfg(any(test, feature="test-support"))]`), path `crate::clock::FakeClock`. Canonical constructor is `FakeClock::new(times: Vec<u64>)`; for a constant clock use `FakeClock::fixed(now_ms: u64)` whose `now_ms()` returns that fixed value.
   - `type Result<T> = std::result::Result<T, DeathpwnError>;` with `DeathpwnError::Io(#[from] std::io::Error)` — from Task 1, path `crate::error::Result` / `crate::error::DeathpwnError`.
 - Produces:
   - `struct Target { value: String }` (host or url).
@@ -413,7 +413,7 @@
       #[test]
       fn open_creates_session_dir_named_by_clock() {
           let tmp = tempfile::tempdir().unwrap();
-          let clock = FakeClock::new(1_700_000_000_000);
+          let clock = FakeClock::fixed(1_700_000_000_000);
 
           let artifacts = Artifacts::open(tmp.path().to_path_buf(), &clock).unwrap();
 
@@ -477,7 +477,7 @@
       #[test]
       fn open_creates_session_dir_named_by_clock() {
           let tmp = tempfile::tempdir().unwrap();
-          let clock = FakeClock::new(1_700_000_000_000);
+          let clock = FakeClock::fixed(1_700_000_000_000);
 
           let artifacts = Artifacts::open(tmp.path().to_path_buf(), &clock).unwrap();
 
@@ -512,7 +512,7 @@
       use crate::exec::RunOutcome;
 
       let tmp = tempfile::tempdir().unwrap();
-      let clock = FakeClock::new(1_700_000_000_000);
+      let clock = FakeClock::fixed(1_700_000_000_000);
       let artifacts = Artifacts::open(tmp.path().to_path_buf(), &clock).unwrap();
 
       let outcome = RunOutcome {
@@ -607,7 +607,7 @@
       #[test]
       fn open_creates_session_dir_named_by_clock() {
           let tmp = tempfile::tempdir().unwrap();
-          let clock = FakeClock::new(1_700_000_000_000);
+          let clock = FakeClock::fixed(1_700_000_000_000);
 
           let artifacts = Artifacts::open(tmp.path().to_path_buf(), &clock).unwrap();
 
@@ -619,7 +619,7 @@
       #[test]
       fn write_output_persists_numbered_file_with_streams() {
           let tmp = tempfile::tempdir().unwrap();
-          let clock = FakeClock::new(1_700_000_000_000);
+          let clock = FakeClock::fixed(1_700_000_000_000);
           let artifacts = Artifacts::open(tmp.path().to_path_buf(), &clock).unwrap();
 
           let outcome = RunOutcome {
