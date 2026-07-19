@@ -30,17 +30,39 @@ use app::{App, Job, StatusBar};
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
-        println!("deathPWN - Agentic AI Coding Assistant / Offensive-Security Terminal");
-        println!();
-        println!("Usage: deathPWN [OPTIONS]");
-        println!();
-        println!("Options:");
-        println!("  --no-cache, --disable-cache  Disable in-memory command caching");
-        println!("  --cache, --enable-cache      Enable in-memory command caching");
-        println!("  --clear-history              Clear all previous session command logs/history");
-        println!("  -h, --help                   Print help information");
-        return Ok(());
+
+    // Check if we have standard flags, but check for query args:
+    let mut query_args = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--history" {
+            i += 2;
+        } else if args[i].starts_with("--history=") {
+            i += 1;
+        } else if args[i] == "--no-cache"
+            || args[i] == "--disable-cache"
+            || args[i] == "--cache"
+            || args[i] == "--enable-cache"
+            || args[i] == "--clear-history"
+        {
+            i += 1;
+        } else if args[i] == "-h" || args[i] == "--help" {
+            println!("deathPWN - Agentic AI Coding Assistant / Offensive-Security Terminal");
+            println!();
+            println!("Usage: deathPWN [OPTIONS] [RAW_QUERY]");
+            println!();
+            println!("Options:");
+            println!("  --no-cache, --disable-cache  Disable in-memory command caching");
+            println!("  --cache, --enable-cache      Enable in-memory command caching");
+            println!("  --clear-history              Clear all previous session command logs/history");
+            println!("  -h, --help                   Print help information");
+            println!();
+            println!("If [RAW_QUERY] is provided, deathPWN resolves and executes the command directly in the terminal.");
+            return Ok(());
+        } else {
+            query_args.push(args[i].clone());
+            i += 1;
+        }
     }
 
     if args
@@ -56,22 +78,22 @@ async fn main() -> Result<()> {
     }
 
     let mut history_val = None;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--history" {
-            if i + 1 < args.len() {
-                history_val = Some(args[i + 1].clone());
-                i += 2;
+    let mut j = 0;
+    while j < args.len() {
+        if args[j] == "--history" {
+            if j + 1 < args.len() {
+                history_val = Some(args[j + 1].clone());
+                j += 2;
             } else {
                 eprintln!("Error: --history requires an argument (on/off/clear)");
                 std::process::exit(1);
             }
-        } else if args[i].starts_with("--history=") {
-            let val = args[i].split_at("--history=".len()).1.to_string();
+        } else if args[j].starts_with("--history=") {
+            let val = args[j].split_at("--history=".len()).1.to_string();
             history_val = Some(val);
-            i += 1;
+            j += 1;
         } else {
-            i += 1;
+            j += 1;
         }
     }
 
@@ -119,6 +141,12 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+
+    if !query_args.is_empty() {
+        let query = query_args.join(" ");
+        run_cli(&query).await?;
+        return Ok(());
+    }
     let (crossterm_tx, mut crossterm_rx) = mpsc::channel::<Event>(64);
 
     thread::spawn(move || loop {
@@ -145,7 +173,8 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut result;
+    #[allow(unused_assignments)]
+    let mut result: deathpwn_core::error::Result<()> = Ok(());
 
     loop {
         load_dotenv();
@@ -201,7 +230,6 @@ async fn main() -> Result<()> {
 
         let spinner_interval = tokio::time::Duration::from_millis(80);
 
-        let mut reload = false;
         result = loop {
             app.status.tick();
             if let Err(e) = terminal.draw(|f| ui::draw(f, &mut app)) {
@@ -211,10 +239,25 @@ async fn main() -> Result<()> {
                 break Ok(());
             }
             if app.should_reload {
-                reload = true;
                 app.cancel.cancel();
-                notify_ghostty("deathPWN reloaded");
-                break Ok(());
+                notify_ghostty("deathPWN reloading...");
+
+                disable_raw_mode().ok();
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    crossterm::event::DisableMouseCapture
+                ).ok();
+                terminal.show_cursor().ok();
+
+                let exe = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("deathPWN"));
+                use std::os::unix::process::CommandExt as _;
+                let err = std::process::Command::new(&exe)
+                    .args(std::env::args().skip(1))
+                    .exec();
+                eprintln!("Failed to exec {:?}: {}", exe, err);
+                std::process::exit(1);
             }
             tokio::select! {
                 maybe_evt = crossterm_rx.recv() => {
@@ -236,7 +279,7 @@ async fn main() -> Result<()> {
             }
         };
 
-        if result.is_err() || app.should_quit || !reload {
+        if result.is_err() || app.should_quit {
             break;
         }
     }
@@ -293,4 +336,107 @@ fn notify_ghostty(message: &str) {
     let osc9 = format!("\x1b]9;{}\x07", message);
     let _ = std::io::stdout().write_all(osc9.as_bytes());
     let _ = std::io::stdout().flush();
+}
+
+async fn run_cli(query: &str) -> Result<()> {
+    load_dotenv();
+    let config = Config::from_env()?;
+
+    let provider_a: Arc<dyn AiProvider> = Arc::new(OpenAiClient::new(
+        config.provider_a.url.clone(),
+        config.provider_a.key.clone(),
+        config.provider_a.model.clone(),
+        "provider-a",
+        config.http_timeout_secs,
+    )?);
+    let provider_b: Arc<dyn AiProvider> = Arc::new(OpenAiClient::new(
+        config.provider_b.url.clone(),
+        config.provider_b.key.clone(),
+        config.provider_b.model.clone(),
+        "provider-b",
+        config.http_timeout_secs,
+    )?);
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let engine_ai = FailoverClient::new(provider_a.clone(), provider_b.clone(), clock.clone());
+
+    let runner = ShellRunner::new(config.shell.clone());
+    let mut engine = Engine::new(
+        runner,
+        engine_ai,
+        config.preferences.clone(),
+        config.shell.clone(),
+    );
+
+    let (event_tx, mut event_rx) = mpsc::channel::<EngineEvent>(1024);
+    let cancel = deathpwn_core::cancel::CancelToken::new();
+
+    println!("\x1b[1;36m[+] Resolving query via AI:\x1b[0m {}", query);
+
+    let cancel_clone = cancel.clone();
+    let query_string = query.to_string();
+    tokio::spawn(async move {
+        let _ = engine.handle_line(&query_string, true, event_tx, cancel_clone).await;
+    });
+
+    let mut resolved_command = None;
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            EngineEvent::Resolved(cmd) => {
+                resolved_command = Some(cmd);
+            }
+            EngineEvent::Error(err) => {
+                eprintln!("\x1b[1;31m[-] Resolution error:\x1b[0m {}", err);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(cmd) = resolved_command {
+        println!("\x1b[1;32m[+] Resolved command:\x1b[0m {}", cmd);
+        println!("\x1b[1;33m[+] Executing...\x1b[0m");
+
+        let (output_tx, mut output_rx) = mpsc::channel::<deathpwn_core::exec::OutputLine>(1024);
+        let runner_exec = ShellRunner::new(config.shell.clone());
+
+        let parsed_tokens = shell_words::split(&cmd).unwrap_or_else(|_| vec![cmd.clone()]);
+        let mut iter = parsed_tokens.into_iter();
+        if let Some(tool) = iter.next() {
+            let spec = deathpwn_core::exec::CommandSpec {
+                tool,
+                argv: iter.collect(),
+            };
+
+            let printer_task = tokio::spawn(async move {
+                while let Some(line) = output_rx.recv().await {
+                    match line.stream {
+                        deathpwn_core::exec::Stream::Stdout => {
+                            println!("{}", line.text);
+                        }
+                        deathpwn_core::exec::Stream::Stderr => {
+                            eprintln!("{}", line.text);
+                        }
+                        deathpwn_core::exec::Stream::Banner => {
+                            println!("\x1b[1;35m{}\x1b[0m", line.text);
+                        }
+                    }
+                }
+            });
+
+            let cancel_exec = deathpwn_core::cancel::CancelToken::new();
+            use deathpwn_core::exec::CommandRunner;
+            let outcome = runner_exec.run_streaming(&spec, output_tx, cancel_exec).await;
+            let _ = printer_task.await;
+
+            if let Some(exit_code) = outcome.exit {
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
+            }
+        }
+    } else {
+        eprintln!("\x1b[1;31m[-] Could not resolve command.\x1b[0m");
+        std::process::exit(1);
+    }
+
+    Ok(())
 }

@@ -4,7 +4,7 @@
 //! state, cancels tokens, and `try_send`s jobs) so it can be unit-tested by
 //! pumping a scripted key sequence — no terminal, no async runtime required.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tokio::sync::mpsc;
@@ -16,6 +16,8 @@ use deathpwn_core::exec::Stream;
 use deathpwn_core::schema::Stage4Render;
 
 use crate::ui;
+use crate::ui::filebrowser::{self, ClickAction, ClickItem, FileEntry};
+use crate::ui::popup::{self, PopupState, PopupHit};
 
 /// Lines scrolled per PageUp / PageDown.
 const PAGE: u16 = 10;
@@ -65,13 +67,6 @@ pub struct DiscoveredTarget {
     pub expanded: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct MatrixClickItem {
-    pub text_to_copy: String,
-    pub target_ip: Option<String>,
-    pub row_y: u16,
-}
-
 /// All UI state.
 pub struct App {
     pub input: String,
@@ -86,11 +81,24 @@ pub struct App {
     pub current_render: Option<Stage4Render>,
     pub targets: Vec<DiscoveredTarget>,
     pub active_scrape_ip: Option<String>,
-    pub clickable_items: Vec<MatrixClickItem>,
+    pub clickable_items: Vec<ClickItem>,
     pub local_ip: String,
     pub current_dir: String,
+    pub file_entries: Vec<FileEntry>,
+    pub popup: Option<PopupState>,
+    pub term_size: (u16, u16),
+    pub filebar_scroll: u16,
+    pub filebar_max_scroll: u16,
+    pub filebar_origin_x: u16,
+    pub filebar_row_y: u16,
+    pub filebar_drag_active: bool,
+    pub filebar_drag_start_x: u16,
+    pub filebar_drag_last_x: u16,
+    pub filebar_drag_delta: u16,
     cmd_tx: mpsc::Sender<Job>,
     stdin_tx: mpsc::Sender<String>,
+    history: Vec<String>,
+    history_idx: Option<usize>,
 }
 
 impl App {
@@ -99,37 +107,10 @@ impl App {
         stdin_tx: mpsc::Sender<String>,
         status: StatusBar,
     ) -> Self {
-        let banner_text = r#"      $$\                   $$\    $$\      $$$$$$$\ $$\      $$\$$\   $$\ 
-      $$ |                  $$ |   $$ |     $$  __$$\$$ | $\  $$ $$$\  $$ |
- $$$$$$$ |$$$$$$\  $$$$$$\$$$$$$\  $$$$$$$\ $$ |  $$ $$ |$$$\ $$ $$$$\ $$ |
-$$  __$$ $$  __$$\ \____$$\_$$  _| $$  __$$\$$$$$$$  $$ $$ $$\$$ $$ $$\$$ |
-$$ /  $$ $$$$$$$$ |$$$$$$$ |$$ |   $$ |  $$ $$  ____/$$$$  _$$$$ $$ \$$$$ |
-$$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
-\$$$$$$$ \$$$$$$$\\$$$$$$$ |\$$$$  $$ |  $$ $$ |     $$  /   \$$ $$ | \$$ |
- \_______|\_______|\_______| \____/\__|  \__\__|     \__/     \__\__|  \__|"#;
-
-        let mut output = Vec::new();
-        output.push(Line::from(""));
-        for line in banner_text.lines() {
-            output.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default()
-                    .fg(Color::Rgb(0, 215, 255))
-                    .add_modifier(Modifier::BOLD),
-            )));
-        }
-        output.push(Line::from(""));
-        output.push(Line::from(Span::styled(
-            "  - NL-driven Offensive Security Terminal for BlackArch Linux -",
-            Style::default()
-                .fg(Color::Rgb(216, 216, 216))
-                .add_modifier(Modifier::ITALIC),
-        )));
-        output.push(Line::from(Span::styled(
-            "  Type natural language or direct shell commands to begin.",
-            Style::default().fg(Color::Rgb(38, 38, 38)),
-        )));
-        output.push(Line::from(""));
+        let output = Vec::new();
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "-".to_string());
 
         Self {
             input: String::new(),
@@ -146,16 +127,31 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
             active_scrape_ip: None,
             clickable_items: Vec::new(),
             local_ip: Self::get_local_ip(),
-            current_dir: std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "-".to_string()),
+            current_dir: cwd.clone(),
+            file_entries: filebrowser::refresh_file_list(&cwd),
+            popup: None,
+            term_size: (80, 24),
+            filebar_scroll: 0,
+            filebar_max_scroll: 0,
+            filebar_origin_x: 0,
+            filebar_row_y: 0,
+            filebar_drag_active: false,
+            filebar_drag_start_x: 0,
+            filebar_drag_last_x: 0,
+            filebar_drag_delta: 0,
             cmd_tx,
             stdin_tx,
+            history: Vec::new(),
+            history_idx: None,
         }
     }
 
     /// Handle one key press.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.popup.is_some() {
+            self.handle_popup_key(key);
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match (key.code, ctrl, alt) {
@@ -176,16 +172,24 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
                     self.should_quit = true;
                 }
             }
-            (KeyCode::Left, _, _) => {
+            (KeyCode::Left, true, _) | (KeyCode::Left, _, true) => {
+                self.filebar_scroll = self.filebar_scroll.saturating_sub(6);
+            }
+            (KeyCode::Right, true, _) | (KeyCode::Right, _, true) => {
+                self.filebar_scroll = (self.filebar_scroll + 6).min(self.filebar_max_scroll);
+            }
+            (KeyCode::Left, false, false) => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
                 }
             }
-            (KeyCode::Right, _, _) => {
+            (KeyCode::Right, false, false) => {
                 if self.cursor_pos < self.input.len() {
                     self.cursor_pos += 1;
                 }
             }
+            (KeyCode::Up, _, _) => self.history_prev(),
+            (KeyCode::Down, _, _) => self.history_next(),
             (KeyCode::Home, _, _) => {
                 self.cursor_pos = 0;
             }
@@ -208,7 +212,73 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
             (KeyCode::Char(c), false, false) => {
                 self.input.insert(self.cursor_pos, c);
                 self.cursor_pos += 1;
+                self.scroll = u16::MAX;
             }
+            _ => {}
+        }
+    }
+
+    fn history_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let idx = match self.history_idx {
+            None => self.history.len() - 1,
+            Some(0) => return,
+            Some(i) => i - 1,
+        };
+        self.history_idx = Some(idx);
+        self.input = self.history[idx].clone();
+        self.cursor_pos = self.input.len();
+    }
+
+    fn history_next(&mut self) {
+        match self.history_idx {
+            None => return,
+            Some(i) if i + 1 >= self.history.len() => {
+                self.history_idx = None;
+                self.input.clear();
+                self.cursor_pos = 0;
+            }
+            Some(i) => {
+                let idx = i + 1;
+                self.history_idx = Some(idx);
+                self.input = self.history[idx].clone();
+                self.cursor_pos = self.input.len();
+            }
+        }
+    }
+
+    fn handle_popup_key(&mut self, key: KeyEvent) {
+        let popup = self.popup.as_mut().unwrap();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match (key.code, ctrl) {
+            (KeyCode::Esc, _) => { self.popup = None; }
+            (KeyCode::Char('s'), true) => {
+                let _ = popup::save(popup);
+                popup.dirty = false;
+            }
+            (KeyCode::Char('z'), true) => popup::undo(popup),
+            (KeyCode::Char('y'), true) => popup::redo(popup),
+            (KeyCode::Left, _) => popup::move_cursor(popup, popup::ArrowDir::Left),
+            (KeyCode::Right, _) => popup::move_cursor(popup, popup::ArrowDir::Right),
+            (KeyCode::Up, _) => popup::move_cursor(popup, popup::ArrowDir::Up),
+            (KeyCode::Down, _) => popup::move_cursor(popup, popup::ArrowDir::Down),
+            (KeyCode::Backspace, _) => popup::backspace(popup),
+            (KeyCode::Delete, _) => popup::delete_char(popup),
+            (KeyCode::Enter, _) => popup::newline(popup),
+            (KeyCode::Home, _) => { popup.cursor_col = 0; }
+            (KeyCode::End, _) => {
+                let len = popup.lines[popup.cursor_row].len();
+                popup.cursor_col = len;
+            }
+            (KeyCode::PageUp, _) => {
+                popup.scroll_row = popup.scroll_row.saturating_sub(10);
+            }
+            (KeyCode::PageDown, _) => {
+                popup.scroll_row = popup.scroll_row.saturating_add(10);
+            }
+            (KeyCode::Char(c), false) => popup::insert_char(popup, c),
             _ => {}
         }
     }
@@ -287,7 +357,8 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
                 self.status.phase = Phase::Idle;
             }
             EngineEvent::Cwd(cwd) => {
-                self.current_dir = cwd;
+                self.current_dir = cwd.clone();
+                self.file_entries = filebrowser::refresh_file_list(&cwd);
             }
             EngineEvent::Resolved(resolved) => {
                 self.input = resolved;
@@ -320,6 +391,8 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
     fn submit(&mut self) {
         if self.running {
             let line = std::mem::take(&mut self.input);
+            self.history.push(line.clone());
+            self.history_idx = None;
             let prompt_line = Line::from(vec![
                 Span::styled(
                     "> ",
@@ -344,26 +417,18 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
 
         let trimmed = line.trim();
         if trimmed == "clear" || trimmed == "cls" {
+            self.history.push(line);
+            self.history_idx = None;
             self.output.clear();
             self.scroll = 0;
             self.cursor_pos = 0;
             return;
         }
 
+        self.history.push(line.clone());
+        self.history_idx = None;
         self.scrape_text(&line);
         self.cursor_pos = 0;
-
-        let prompt_line = Line::from(vec![
-            Span::styled(
-                "> ",
-                Style::default()
-                    .fg(Color::Rgb(0, 255, 102))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(line.clone()),
-        ]);
-        self.output.push(prompt_line);
-        self.scroll = u16::MAX;
 
         let cancel = CancelToken::new();
         self.cancel = cancel.clone();
@@ -411,22 +476,146 @@ $$ |  $$ $$   ____$$  __$$ |$$ |$$\$$ |  $$ $$ |     $$$  / \$$$ $$ |\$$$ |
         self.cursor_pos = 0;
     }
 
-    pub fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+    fn trigger_click_action(&mut self, row: u16, col: u16) {
+        let adjusted_col = (col as i32 - self.filebar_origin_x as i32 + self.filebar_scroll as i32).max(0) as u16;
+        if let Some(item) = self.clickable_items.iter().find(|i| {
+            i.row_y == row && (i.col_range.is_none() ||
+                i.col_range.map_or(false, |(c1, c2)| adjusted_col >= c1 && adjusted_col <= c2))
+        }) {
+            match &item.action {
+                ClickAction::ToggleTarget { ip } => {
+                    if let Some(t) = self.targets.iter_mut().find(|t| &t.ip == ip) {
+                        t.expanded = !t.expanded;
+                    }
+                }
+                ClickAction::NavigateDir { path } => {
+                    self.input = format!("cd {}", shell_words::quote(path));
+                    self.submit();
+                }
+                ClickAction::OpenFile { path } => {
+                    match popup::load_file(path) {
+                        Ok(ps) => self.popup = Some(ps),
+                        Err(_) => {}
+                    }
+                }
+                ClickAction::CopyToClipboard { text } => {
+                    copy_to_clipboard(text);
+                }
+            }
+        }
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if let Some(ref popup_st) = self.popup {
+            let full = ratatui::layout::Rect {
+                x: 0, y: 0,
+                width: self.term_size.0,
+                height: self.term_size.1,
+            };
+            let pr = popup::popup_area(full);
+            match popup::popup_hit_test(popup_st, pr, mouse.row, mouse.column) {
+                PopupHit::Save => {
+                    let mut popup = self.popup.take().unwrap();
+                    let _ = popup::save(&popup);
+                    popup.dirty = false;
+                    self.popup = Some(popup);
+                }
+                PopupHit::Exit => { self.popup = None; }
+                PopupHit::Undo => {
+                    let mut popup = self.popup.take().unwrap();
+                    popup::undo(&mut popup);
+                    self.popup = Some(popup);
+                }
+                PopupHit::Redo => {
+                    let mut popup = self.popup.take().unwrap();
+                    popup::redo(&mut popup);
+                    self.popup = Some(popup);
+                }
+                PopupHit::Text { row, col } => {
+                    let mut popup = self.popup.take().unwrap();
+                    popup.cursor_row = row;
+                    popup.cursor_col = col.min(
+                        popup.lines.get(row).map(|l| l.len()).unwrap_or(0)
+                    );
+                    self.popup = Some(popup);
+                }
+                PopupHit::None => {}
+            }
+            return;
+        }
+
         let row = mouse.row;
+        let col = mouse.column;
+        let filebar_y = if self.filebar_row_y > 0 {
+            self.filebar_row_y.saturating_sub(1)
+        } else {
+            self.term_size.1.saturating_sub(3)
+        };
+        let is_in_filebar_region = row >= filebar_y;
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+
         match mouse.kind {
-            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                if let Some(item) = self.clickable_items.iter().find(|i| i.row_y == row) {
-                    if let Some(ref ip) = item.target_ip {
-                        if let Some(t) = self.targets.iter_mut().find(|t| &t.ip == ip) {
-                            t.expanded = !t.expanded;
-                        }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if is_in_filebar_region {
+                    self.filebar_drag_active = true;
+                    self.filebar_drag_start_x = col;
+                    self.filebar_drag_last_x = col;
+                    self.filebar_drag_delta = 0;
+                } else {
+                    self.filebar_drag_active = false;
+                    self.trigger_click_action(row, col);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.filebar_drag_active {
+                    let dx = self.filebar_drag_last_x as i32 - col as i32;
+                    self.filebar_drag_delta = self.filebar_drag_delta.saturating_add(dx.unsigned_abs() as u16);
+                    self.filebar_drag_last_x = col;
+                    if dx != 0 {
+                        let new_scroll = (self.filebar_scroll as i32 + dx)
+                            .clamp(0, self.filebar_max_scroll as i32) as u16;
+                        self.filebar_scroll = new_scroll;
                     }
                 }
             }
-            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                if let Some(item) = self.clickable_items.iter().find(|i| i.row_y == row) {
-                    copy_to_clipboard(&item.text_to_copy);
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.filebar_drag_active {
+                    self.filebar_drag_active = false;
+                    if self.filebar_drag_delta <= 1 {
+                        self.trigger_click_action(row, self.filebar_drag_start_x);
+                    }
                 }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if let Some(item) = self.clickable_items.iter().find(|i| i.row_y == row) {
+                    let text = match &item.action {
+                        ClickAction::ToggleTarget { ip } => ip.clone(),
+                        ClickAction::NavigateDir { path }
+                        | ClickAction::OpenFile { path } => path.clone(),
+                        ClickAction::CopyToClipboard { text } => text.clone(),
+                    };
+                    copy_to_clipboard(&text);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if is_in_filebar_region || shift {
+                    self.filebar_scroll = (self.filebar_scroll + 6).min(self.filebar_max_scroll);
+                } else {
+                    self.scroll = self.scroll.saturating_add(3);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if is_in_filebar_region || shift {
+                    self.filebar_scroll = self.filebar_scroll.saturating_sub(6);
+                } else {
+                    self.scroll = self.scroll.saturating_sub(3);
+                }
+            }
+            MouseEventKind::ScrollRight => {
+                self.filebar_scroll = (self.filebar_scroll + 6).min(self.filebar_max_scroll);
+            }
+            MouseEventKind::ScrollLeft => {
+                self.filebar_scroll = self.filebar_scroll.saturating_sub(6);
             }
             _ => {}
         }
@@ -975,5 +1164,103 @@ mod tests {
 
         let sent = stdin_rx.try_recv().expect("stdin input sent");
         assert_eq!(sent, "some interactive input\n");
+    }
+
+    #[test]
+    fn test_filebar_trackpad_scroll_and_drag_swipe() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let (job_tx, _job_rx) = mpsc::channel::<Job>(16);
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(16);
+        let mut app = App::new(job_tx, stdin_tx, StatusBar::new("gpt-4o-mini"));
+        app.filebar_row_y = 22;
+        app.filebar_max_scroll = 50;
+
+        // 1. Trackpad ScrollRight / ScrollLeft
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollRight,
+            column: 10,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.filebar_scroll, 6);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollLeft,
+            column: 10,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.filebar_scroll, 0);
+
+        // 2. Trackpad / wheel scroll in filebar region (row 22) scrolls filebar
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.filebar_scroll, 6);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.filebar_scroll, 0);
+
+        // 3. Alt+Right / Alt+Left keyboard scrolling
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(app.filebar_scroll, 6);
+
+        app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(app.filebar_scroll, 0);
+
+        // 3. Trackpad / wheel scroll in console region (row 5) scrolls console vertically
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.scroll, 3);
+        assert_eq!(app.filebar_scroll, 0);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.filebar_scroll, 0);
+
+        // 3. Click hold & swipe drag
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 30,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.filebar_drag_active);
+
+        // Drag left (col 30 -> 20, dx = +10) -> content scrolls right (+10)
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 20,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.filebar_scroll, 10);
+
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 20,
+            row: 22,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(!app.filebar_drag_active);
+        assert_eq!(app.filebar_scroll, 10);
     }
 }

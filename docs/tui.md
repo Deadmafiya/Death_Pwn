@@ -8,7 +8,7 @@ Built with **ratatui 0.29** + **crossterm 0.28**. Runs on tokio async multi-thre
 ## CLI Arguments
 
 ```
-deathPWN [OPTIONS]
+deathPWN [OPTIONS] [RAW_QUERY]
 
 Options:
   --no-cache, --disable-cache  Disable in-memory command caching
@@ -17,6 +17,30 @@ Options:
   --history on|off|clear       Enable, disable, or clear command history
   -h, --help                   Print help information
 ```
+
+### CLI Mode (One-liner Execution)
+
+When a `[RAW_QUERY]` is provided, deathPWN skips the TUI entirely and runs in
+**CLI mode** — the query is resolved via the AI engine, then the resulting
+command is executed inline in the current terminal with stdout/stderr streamed
+directly. The process exits with the command's exit code.
+
+```bash
+# Natural language → resolve → execute → exit
+deathPWN scan all open ports on 10.10.10.5
+deathPWN list all docker containers
+deathPWN find suid binaries on this machine
+
+# Without arguments → launches the full interactive TUI
+deathPWN
+```
+
+CLI mode workflow:
+1. **Resolve** — The raw query is sent through the AI pipeline (`resolve_only`)
+   to produce a concrete shell command.
+2. **Display** — The resolved command is printed to the terminal before execution.
+3. **Execute** — The command is run via `ShellRunner` with real-time stdout/stderr streaming.
+4. **Exit** — The process exits with the command's exit code (non-zero on failure).
 
 ## Main Loop
 

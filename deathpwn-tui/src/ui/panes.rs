@@ -7,10 +7,11 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::ui::filebrowser::{ClickAction, ClickItem};
 use crate::ui::theme;
 
 /// Renders the Left Column (Tactical Telemetry) container.
-pub fn render_telemetry(f: &mut Frame, area: Rect, app: &App) {
+pub fn render_telemetry(f: &mut Frame, area: Rect, app: &mut App) {
     let status_color = if app.running {
         theme::TOXIC_ACID_GREEN
     } else {
@@ -24,6 +25,19 @@ pub fn render_telemetry(f: &mut Frame, area: Rect, app: &App) {
     } else {
         "◼ IDLE".to_string()
     };
+
+    let ip_row_y = area.y + 2; // block border + blank pad
+    let dir_row_y = area.y + 3;
+    app.clickable_items.push(ClickItem {
+        action: ClickAction::CopyToClipboard { text: app.local_ip.clone() },
+        row_y: ip_row_y,
+        col_range: None,
+    });
+    app.clickable_items.push(ClickItem {
+        action: ClickAction::CopyToClipboard { text: app.current_dir.clone() },
+        row_y: dir_row_y,
+        col_range: None,
+    });
 
     let telemetry_lines = vec![
         Line::from(""),
@@ -73,7 +87,7 @@ pub fn render_console(f: &mut Frame, area: Rect, app: &App) {
         .borders(Borders::ALL)
         .border_style(theme::border_style())
         .title(Span::styled(
-            " INTERACTIVE TERMINAL CONSOLE ",
+            " deathPWN ",
             theme::label_style(),
         ))
         .title_alignment(Alignment::Left)
@@ -81,7 +95,6 @@ pub fn render_console(f: &mut Frame, area: Rect, app: &App) {
 
     let mut render_lines = app.output.clone();
 
-    // Add the active prompt line at the bottom
     let prompt_line = Line::from(vec![
         Span::styled(
             "> ",
@@ -111,36 +124,180 @@ pub fn render_console(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(paragraph, area);
 
-    if text_height > 0 {
-        let prompt_line_idx = text_height - 1;
-        let relative_y = prompt_line_idx.saturating_sub(scroll as usize);
-        if relative_y < inner_height {
-            let cursor_x = area.x + 1 + 2 + app.cursor_pos as u16;
-            let cursor_y = area.y + 1 + relative_y as u16;
-            f.set_cursor_position((cursor_x, cursor_y));
-        }
+    let prompt_line_idx = text_height.saturating_sub(1);
+    let relative_y = prompt_line_idx.saturating_sub(scroll as usize);
+    if relative_y < inner_height {
+        let cursor_x = area.x + 1 + 2 + app.cursor_pos as u16;
+        let cursor_y = area.y + 1 + relative_y as u16;
+        f.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
-/// Renders the lower terminal input row. Sets cursor position for the blinking cursor.
-pub fn render_input(f: &mut Frame, area: Rect, _app: &App) {
+/// Renders the lower file browser bar showing current directory contents with icons — horizontally scrollable.
+pub fn render_filebar(f: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::border_style())
         .title(Span::styled(
-            " COMMAND INTERACTION ENTRY ",
+            format!("  {}  ", app.current_dir),
             theme::label_style(),
         ))
         .bg(theme::PITCH_BLACK);
 
-    let paragraph = Paragraph::new("").block(block);
+    let inner = block.inner(area);
+    app.filebar_origin_x = inner.x;
+    app.filebar_row_y = inner.y;
+
+    let mut row0_entries = Vec::new();
+    let mut row1_entries = Vec::new();
+    for (i, entry) in app.file_entries.iter().enumerate() {
+        if i % 2 == 0 {
+            row0_entries.push(entry);
+        } else {
+            row1_entries.push(entry);
+        }
+    }
+
+    let mut row0_width: u16 = 0;
+    for entry in &row0_entries {
+        let full = format!("{} {} ", entry.icon, entry.name);
+        row0_width += full.chars().count() as u16;
+    }
+
+    let mut row1_width: u16 = 0;
+    for entry in &row1_entries {
+        let full = format!("{} {} ", entry.icon, entry.name);
+        row1_width += full.chars().count() as u16;
+    }
+
+    let total_max_width = row0_width.max(row1_width);
+    let max_scroll = total_max_width.saturating_sub(inner.width);
+    app.filebar_max_scroll = max_scroll;
+    if app.filebar_scroll > max_scroll {
+        app.filebar_scroll = max_scroll;
+    }
+
+    let scroll_offset = app.filebar_scroll;
+    let visible_limit = scroll_offset + inner.width;
+
+    let mut row0_spans: Vec<Span> = Vec::new();
+    let mut current_char_idx0: u16 = 0;
+    for entry in &row0_entries {
+        let icon_color = if entry.is_dir {
+            theme::CYBER_CYAN
+        } else {
+            theme::TOXIC_ACID_GREEN
+        };
+
+        let full = format!("{} {} ", entry.icon, entry.name);
+        let full_chars: Vec<char> = full.chars().collect();
+        let full_w = full_chars.len() as u16;
+
+        let entry_start = current_char_idx0;
+        let entry_end = current_char_idx0 + full_w;
+
+        let path = format!("{}/{}", app.current_dir.trim_end_matches('/'), entry.name);
+        let action = if entry.is_dir {
+            ClickAction::NavigateDir { path }
+        } else {
+            ClickAction::OpenFile { path }
+        };
+        app.clickable_items.push(ClickItem {
+            action,
+            row_y: inner.y,
+            col_range: Some((entry_start, entry_end.saturating_sub(1))),
+        });
+
+        if entry_end > scroll_offset && entry_start < visible_limit {
+            let slice_start = if scroll_offset > entry_start {
+                (scroll_offset - entry_start) as usize
+            } else {
+                0
+            };
+            let slice_end = if visible_limit < entry_end {
+                (visible_limit - entry_start) as usize
+            } else {
+                full_chars.len()
+            };
+
+            if slice_start < slice_end && slice_start < full_chars.len() {
+                let visible_str: String = full_chars[slice_start..slice_end.min(full_chars.len())].iter().collect();
+                row0_spans.push(Span::styled(
+                    visible_str,
+                    Style::default().fg(icon_color).bg(theme::PITCH_BLACK),
+                ));
+            }
+        }
+        current_char_idx0 += full_w;
+    }
+
+    let mut row1_spans: Vec<Span> = Vec::new();
+    let mut current_char_idx1: u16 = 0;
+    let row1_y = inner.y + 1;
+
+    for entry in &row1_entries {
+        let icon_color = if entry.is_dir {
+            theme::CYBER_CYAN
+        } else {
+            theme::TOXIC_ACID_GREEN
+        };
+
+        let full = format!("{} {} ", entry.icon, entry.name);
+        let full_chars: Vec<char> = full.chars().collect();
+        let full_w = full_chars.len() as u16;
+
+        let entry_start = current_char_idx1;
+        let entry_end = current_char_idx1 + full_w;
+
+        let path = format!("{}/{}", app.current_dir.trim_end_matches('/'), entry.name);
+        let action = if entry.is_dir {
+            ClickAction::NavigateDir { path }
+        } else {
+            ClickAction::OpenFile { path }
+        };
+        app.clickable_items.push(ClickItem {
+            action,
+            row_y: row1_y,
+            col_range: Some((entry_start, entry_end.saturating_sub(1))),
+        });
+
+        if entry_end > scroll_offset && entry_start < visible_limit {
+            let slice_start = if scroll_offset > entry_start {
+                (scroll_offset - entry_start) as usize
+            } else {
+                0
+            };
+            let slice_end = if visible_limit < entry_end {
+                (visible_limit - entry_start) as usize
+            } else {
+                full_chars.len()
+            };
+
+            if slice_start < slice_end && slice_start < full_chars.len() {
+                let visible_str: String = full_chars[slice_start..slice_end.min(full_chars.len())].iter().collect();
+                row1_spans.push(Span::styled(
+                    visible_str,
+                    Style::default().fg(icon_color).bg(theme::PITCH_BLACK),
+                ));
+            }
+        }
+        current_char_idx1 += full_w;
+    }
+
+    let lines = if inner.height > 1 {
+        vec![Line::from(row0_spans), Line::from(row1_spans)]
+    } else {
+        vec![Line::from(row0_spans)]
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().bg(theme::PITCH_BLACK));
     f.render_widget(paragraph, area);
 }
 
 /// Renders the new "Discovered Target Matrix" section below Tactical Telemetry.
 pub fn render_relations(f: &mut Frame, area: Rect, app: &mut App) {
-    app.clickable_items.clear();
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::border_style())
@@ -164,10 +321,10 @@ pub fn render_relations(f: &mut Frame, area: Rect, app: &mut App) {
 
         for target in &app.targets {
             let row_y = area.y + 1 + current_line_offset;
-            app.clickable_items.push(crate::app::MatrixClickItem {
-                text_to_copy: target.ip.clone(),
-                target_ip: Some(target.ip.clone()),
+            app.clickable_items.push(ClickItem {
+                action: ClickAction::ToggleTarget { ip: target.ip.clone() },
                 row_y,
+                col_range: None,
             });
 
             let arrow = if target.expanded { "▼ " } else { "▶ " };
@@ -206,10 +363,12 @@ pub fn render_relations(f: &mut Frame, area: Rect, app: &mut App) {
                             .collect::<Vec<_>>()
                             .join(", ");
                         let row_y = area.y + 1 + current_line_offset;
-                        app.clickable_items.push(crate::app::MatrixClickItem {
-                            text_to_copy: ports_str.clone(),
-                            target_ip: None,
+                        app.clickable_items.push(ClickItem {
+                            action: ClickAction::CopyToClipboard {
+                                text: ports_str.clone(),
+                            },
                             row_y,
+                            col_range: None,
                         });
                         lines.push(Line::from(vec![
                             Span::styled("    PORTS: ", Style::default().fg(theme::CYBER_CYAN)),
@@ -225,10 +384,12 @@ pub fn render_relations(f: &mut Frame, area: Rect, app: &mut App) {
                         current_line_offset += 1;
                         for url in &target.urls {
                             let row_y = area.y + 1 + current_line_offset;
-                            app.clickable_items.push(crate::app::MatrixClickItem {
-                                text_to_copy: url.clone(),
-                                target_ip: None,
+                            app.clickable_items.push(ClickItem {
+                                action: ClickAction::CopyToClipboard {
+                                    text: url.clone(),
+                                },
                                 row_y,
+                                col_range: None,
                             });
                             lines.push(Line::from(vec![Span::styled(
                                 format!("      - {}", url),
@@ -245,10 +406,12 @@ pub fn render_relations(f: &mut Frame, area: Rect, app: &mut App) {
                         current_line_offset += 1;
                         for path in &target.filepaths {
                             let row_y = area.y + 1 + current_line_offset;
-                            app.clickable_items.push(crate::app::MatrixClickItem {
-                                text_to_copy: path.clone(),
-                                target_ip: None,
+                            app.clickable_items.push(ClickItem {
+                                action: ClickAction::CopyToClipboard {
+                                    text: path.clone(),
+                                },
                                 row_y,
+                                col_range: None,
                             });
                             lines.push(Line::from(vec![Span::styled(
                                 format!("      - {}", path),

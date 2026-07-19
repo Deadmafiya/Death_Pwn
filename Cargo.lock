@@ -246,6 +246,7 @@ dependencies = [
  "deathpwn-core",
  "dotenvy",
  "ratatui",
+ "shell-words",
  "tokio",
 ]
 

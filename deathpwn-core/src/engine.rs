@@ -175,10 +175,6 @@ impl<R: CommandRunner> Engine<R> {
                         tool,
                         argv: iter.collect(),
                     };
-                    let mut words = vec![spec.tool.clone()];
-                    words.extend(spec.argv.clone());
-                    let cmd_line = format!("$ {}", shell_words::join(words));
-                    self.send_banner(cmd_line, tx).await?;
                     self.send_phase(
                         Phase::Executing {
                             tool: spec.tool.clone(),

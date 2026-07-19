@@ -9,16 +9,20 @@ use ratatui::Frame;
 
 use crate::app::App;
 
+pub mod filebrowser;
 pub mod panes;
+pub mod popup;
 pub mod theme;
 
 /// Builds layout constraints and draws nested widgets sequentially.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.term_size = (f.area().width, f.area().height);
+
     let screen_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),    // Main workspace
-            Constraint::Length(3), // Input boundary block
+            Constraint::Length(4), // File browser bar (2-row horizontal scrollable grid)
         ])
         .split(f.area());
 
@@ -39,10 +43,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(upper_workspace_chunks[1]);
 
+    app.clickable_items.clear();
+
     panes::render_console(f, upper_workspace_chunks[0], app);
     panes::render_telemetry(f, right_chunks[0], app);
     panes::render_relations(f, right_chunks[1], app);
-    panes::render_input(f, screen_chunks[1], app);
+    panes::render_filebar(f, screen_chunks[1], app);
+
+    if let Some(ref popup) = app.popup {
+        let pr = popup::popup_area(f.area());
+        f.render_widget(ratatui::widgets::Clear, pr);
+        popup::render_popup(f, pr, popup);
+    }
 }
 
 /// Maps engine analysis configurations into text lines for chronological output stream ingestion.
