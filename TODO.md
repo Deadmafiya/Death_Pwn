@@ -1,23 +1,45 @@
-# TODO: Future Roadmap for deathPWN
+# TODO: Remaining Work for deathPWN
 
-This document tracks advanced features and pipeline stages that have been deferred to prioritize a fast, simple single-stage AI command resolver.
+This document tracks advanced features and pipeline stages that are partially built but need further implementation to be fully operational.
 
 ## 1. 4-Stage AI Pipeline
-- **Stage 1 (Understand)**: Semantic intent parser converting natural language requests into structured `Stage1Understanding` JSON.
-- **Stage 2 (Retrieve)**: Grounding engine performing web searches via DuckDuckGo to obtain relevant tool usage examples and BlackArch command syntaxes.
-- **Stage 3 (Plan)**: Chain-of-command planner producing structured multi-command execution plans (`Stage3Plan`).
-- **Stage 4 (Render)**: Post-execution visualizer formatting raw terminal command stdout/stderr outputs into rich structured TUI widgets (tables, key-values, lists).
+
+**Completed:**
+- All schema types defined in `deathpwn-core/src/schema/mod.rs` (Stage1Understanding, Stage2Knowledge, Stage3Plan, Stage4Render)
+
+**Remaining:**
+- Build stage runners for Understand, Retrieve, Plan, and Render stages
+- Wire stage runners into Engine (currently uses simplified single-stage flow via `FailoverClient::complete_validated()` → `clean_command()`)
 
 ## 2. Multi-Step Goal Completion Loop
-- Autonomous agent capability that iteratively plans, executes, triages, and self-corrects commands until a goal (e.g., getting a shell or finding open web ports) is successfully achieved.
-- AI-driven Goal Check capability to judge goal completion dynamically.
-- Cancellation safety policies to abort the goal chain on user input (Ctrl+C / Ctrl+X).
+
+**Completed:**
+- GoalVerdict and GoalContext schema types defined in `schema/mod.rs`
+- FeedbackLoop with availability check, auto-install, and ai-driven argv correction fully built in `deathpwn-core/src/exec/feedback.rs`
+
+**Remaining:**
+- Implement goal loop state machine inside Engine
+- Wire FeedbackLoop into Engine (currently Engine calls ShellRunner directly)
+- Wire AI GoalCheck calls to determine when goal is achieved
 
 ## 3. Preferred Commands Integration
-- Dedicated user override configuration (`~/.config/deathpwn/preferred_commands.json`) mapping specific tasks (e.g. "host discovery") to custom user commands (e.g., `arp-scan`).
-- Semantic matching in Stage 2/3 to inject and prioritize these overrides over standard generated commands.
+
+**Completed:**
+- `DEATHPWN_PREFERENCE_FILE` env var + auto-discovery (`$XDG_CONFIG_HOME/deathpwn/preference.json`, `~/.config/deathpwn/preference.json`, `./preference.json`) in `config.rs`
+- `preference.json` loaded into `Config::preferences` HashMap
+- Preferences injected into AI system prompt in `engine.rs`
+
+**Remaining:**
+- Direct preference-to-command mapping without AI for exact matches
+- Preference-aware plan caching (cache key should include preferences)
 
 ## 4. History and Cache Systems
-- **Plan Cache (`PlanCache`)**: Exact-match normalized in-memory key lookup to bypass the AI planning step for identical requests.
-- **Artifacts System (`Artifacts`)**: Disk persistence layer recording raw command execution trails to a session directory.
-- **TUI & CLI Commands**: Inline commands (`/history on/off/clear`) and CLI flags (`--history`) to enable, disable, or wipe history.
+
+**Completed:**
+- CLI args implemented: `--cache`/`--no-cache`/`--clear-history`/`--history [on|off|clear]`
+- Artifacts system writes command output to `DEATHPWN_ARTIFACTS_DIR`
+
+**Remaining:**
+- In-memory plan cache (PlanCache structure) wiring into Engine
+- TUI history browsing (arrow-up/down to recall previous commands)
+- `/history` inline commands in the input line

@@ -86,7 +86,11 @@ pub fn parse_ddg_html(html: &str) -> Vec<SearchResult> {
             continue;
         }
 
-        out.push(SearchResult { title, url, snippet });
+        out.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
     }
 
     out
@@ -202,7 +206,10 @@ mod tests {
 
         assert_eq!(results[1].title, "Nmap - Wikipedia");
         assert_eq!(results[1].url, "https://en.wikipedia.org/wiki/Nmap");
-        assert_eq!(results[1].snippet, "Nmap is a network scanner created by Gordon Lyon.");
+        assert_eq!(
+            results[1].snippet,
+            "Nmap is a network scanner created by Gordon Lyon."
+        );
     }
 
     #[test]
@@ -222,7 +229,10 @@ mod tests {
         let ddg = DuckDuckGoSearch::new(client);
         let results = ddg.search("nmap port scan").await.unwrap();
 
-        assert!(!results.is_empty(), "live DDG should return at least one result");
+        assert!(
+            !results.is_empty(),
+            "live DDG should return at least one result"
+        );
         assert!(
             results.iter().all(|r| !r.url.is_empty()),
             "every live result should carry a decoded url"

@@ -1,0 +1,6 @@
+{
+  "host discovery on local network": "sudo arp-scan --local",
+  "directory bruteforce": "gobuster dir -u https://<URL> -w /usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt -x php,txt,html,bak",
+  "our local IP": "ip route get 1.1.1.1 | awk '{print $7; exit}'"
+}
+ 

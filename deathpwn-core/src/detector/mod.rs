@@ -15,14 +15,14 @@ pub enum InputKind {
 }
 
 /// Resolves an input line to an [`InputKind`] using a [`CommandRunner`].
-pub struct Detector<R: CommandRunner> {
-    runner: R,
+pub struct Detector<'a, R: CommandRunner> {
+    runner: &'a R,
     shell: String,
 }
 
-impl<R: CommandRunner> Detector<R> {
+impl<'a, R: CommandRunner> Detector<'a, R> {
     /// Build a detector over a command runner and the configured shell.
-    pub fn new(runner: R, shell: String) -> Detector<R> {
+    pub fn new(runner: &'a R, shell: String) -> Detector<'a, R> {
         Detector { runner, shell }
     }
 
@@ -33,7 +33,7 @@ impl<R: CommandRunner> Detector<R> {
 
     /// Expose the underlying command runner.
     pub fn runner(&self) -> &R {
-        &self.runner
+        self.runner
     }
 
     /// Decide whether `line` is a direct command or raw natural-language input.
@@ -73,26 +73,29 @@ mod tests {
 
     #[tokio::test]
     async fn empty_line_is_raw_input() {
-        let detector = Detector::new(FakeCommandRunner::new(), "/bin/sh".to_string());
+        let runner = FakeCommandRunner::new();
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(detector.classify("").await, InputKind::RawInput);
     }
 
     #[tokio::test]
     async fn whitespace_only_line_is_raw_input() {
-        let detector = Detector::new(FakeCommandRunner::new(), "/bin/sh".to_string());
+        let runner = FakeCommandRunner::new();
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(detector.classify("   \t  ").await, InputKind::RawInput);
     }
 
     #[tokio::test]
     async fn detector_exposes_configured_shell() {
-        let detector = Detector::new(FakeCommandRunner::new(), "/usr/bin/zsh".to_string());
+        let runner = FakeCommandRunner::new();
+        let detector = Detector::new(&runner, "/usr/bin/zsh".to_string());
         assert_eq!(detector.shell(), "/usr/bin/zsh");
     }
 
     #[tokio::test]
     async fn known_command_is_direct_command() {
         let runner = FakeCommandRunner::new().available("nmap");
-        let detector = Detector::new(runner, "/bin/sh".to_string());
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(
             detector.classify("nmap -sV 10.0.0.1").await,
             InputKind::DirectCommand
@@ -103,7 +106,7 @@ mod tests {
     async fn unknown_leading_token_is_raw_input() {
         // No scripted resolution → miss default (exit 127) → RawInput.
         let runner = FakeCommandRunner::new();
-        let detector = Detector::new(runner, "/bin/sh".to_string());
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(
             detector.classify("scan the target for open ports").await,
             InputKind::RawInput
@@ -115,7 +118,7 @@ mod tests {
         // `foobar` is unknown even though the line parses as a shell construct.
         // `baz` is available, but it is not the leading token so it is never probed.
         let runner = FakeCommandRunner::new().available("baz");
-        let detector = Detector::new(runner, "/bin/sh".to_string());
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(detector.classify("foobar | baz").await, InputKind::RawInput);
     }
 
@@ -133,7 +136,7 @@ mod tests {
         // the token before resolution — that guards against metacharacter
         // injection into the probe; it just isn't observable through this fake.
         let runner = FakeCommandRunner::new().available("nmap");
-        let detector = Detector::new(runner, "/bin/sh".to_string());
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(
             detector.classify("\"nmap\" -sV 10.0.0.1").await,
             InputKind::DirectCommand
@@ -143,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn unbalanced_quotes_are_raw_input() {
         let runner = FakeCommandRunner::new();
-        let detector = Detector::new(runner, "/bin/sh".to_string());
+        let detector = Detector::new(&runner, "/bin/sh".to_string());
         assert_eq!(
             detector.classify("echo \"unterminated").await,
             InputKind::RawInput

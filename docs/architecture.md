@@ -21,40 +21,36 @@
 │         ┌────────────────────────┼──────────────────┐     │
 │         │                        │                   │     │
 │  ┌──────▼──────┐  ┌──────────────▼──┐  ┌───────────▼──┐ │
-│  │  Detector   │  │  Pipeline       │  │  Execution   │ │
-│  │  (Step 0)   │  │  (4 stages)     │  │  + Feedback  │ │
+│  │  Detector   │  │  Providers     │  │  Execution   │ │
+│  │  (Step 0)   │  │  (Failover)    │  │  (ShellRunner)│ │
 │  └─────────────┘  └────────────────┘  └──────────────┘ │
 │                                                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐   │
-│  │  Providers   │  │   Search     │  │  Session +    │   │
-│  │  (Failover)  │  │  (DDG)       │  │  Cache        │   │
+│  │   Search     │  │   Schema     │  │  Cancel       │   │
+│  │  (DDG)       │  │  (Types)     │  │  Token        │   │
 │  └──────────────┘  └──────────────┘  └───────────────┘   │
 └───────────────────────────────────────────────────────────┘
 ```
 
 ## Entry Point: `handle_line()`
 
-Everything starts in `Engine::handle_line(line, session, cancel)`:
+Everything starts in `Engine::handle_line(line, tx, cancel)`:
 
 ```
 User Input
     │
     ▼
-[Detector]  ── raw command? ──→ exec_direct() → stream output → Done
+[Detector]  ── DirectCommand? ──→ ShellRunner::run_streaming() → Done
     │
     │ (NL input)
     ▼
-[Understand] → [Retrieve] → {SingleCommand | GoalCompletion}
-                                │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-              Plan once            Goal Loop
-              Execute               ├─ Plan (next_step, uncached)
-              Render                ├─ FeedbackLoop (execute)
-              Done                  ├─ Render
-                                    ├─ GoalCheck
-                                    └─ repeat or Done
+FailoverClient::complete_validated() → clean_command()
+    │
+    ▼
+ShellRunner::run_streaming() → Done
 ```
+
+The current engine uses a **simplified single-stage flow**. Schema types for the full 4-stage pipeline (Understand → Retrieve → Plan → Render) exist in `schema/mod.rs`, but the stage runners are not yet wired into the Engine.
 
 ## Crate Dependency Graph
 
@@ -64,90 +60,109 @@ deathpwn-tui ───→ deathpwn-core
       │                  │
       ▼                  ▼
   ratatui          reqwest, tokio,
-  crossterm        serde, schemars,
-  tokio            shell-words
+  crossterm        serde, shell-words,
+  tokio            scraper, nix, tracing
 ```
 
 ## Core Modules
 
 | Module | Path | Purpose |
 |--------|------|---------|
-| Engine | `engine.rs` | Main orchestrator — dispatches input, runs pipeline & goal loop |
-| Detector | `detector/mod.rs` | Step 0: `command -v` check to classify command vs NL |
-| Pipeline | `pipeline/` | 4-stage AI pipeline (Understand, Retrieve, Plan, Render) |
-| Execution | `exec/` | Command running via `ShellRunner`, feedback loop, installer |
-| Providers | `providers/` | AI provider trait, OpenAI client, dual-provider failover |
-| Search | `search/` | Web search trait + DuckDuckGo HTML scraper |
-| Session | `session/` | Accumulated state (targets, ports, services, findings) |
-| Cache | `cache/mod.rs` | In-memory plan cache (normalized key lookup) |
-| Goal | `goal/mod.rs` | GoalContext for goal-completion loop state |
-| Schema | `schema/mod.rs` | All structured data types for AI responses |
+| Engine | `engine.rs` | Main orchestrator — dispatches input, runs AI resolution, streams output |
+| Detector | `detector/mod.rs` | Step 0: `command -v` probe to classify command vs NL |
+| Schema | `schema/mod.rs` | All structured data types for AI pipeline stages (Stage1–4, FeedbackLoop, GoalVerdict) |
+| Execution | `exec/runner.rs` | `ShellRunner` — persistent shell process, streaming output, cancellation |
+| Execution | `exec/feedback.rs` | `FeedbackLoop` — availability check, auto-install, ai-driven argv correction (**built, not yet wired**) |
+| Execution | `exec/installer.rs` | AI-resolved BlackArch install commands |
+| Providers | `providers/openai.rs` | `OpenAiClient` — OpenAI-compatible HTTP client |
+| Providers | `providers/failover.rs` | `FailoverClient` — dual-provider with schema validation fallback |
+| Providers | `providers/ai.rs` | `AiProvider` trait + `ChatRequest` + `ProviderError` |
+| Search | `search/ddg.rs` | DuckDuckGo HTML scrape search (**built, not yet wired**) |
+| Search | `search/mod.rs` | `SearchProvider` trait + `SearchResult` |
 | Cancel | `cancel.rs` | `CancelToken` — cooperative async cancellation |
-| Config | `config.rs` | Environment-based configuration |
+| Config | `config.rs` | Environment-based configuration, preference loading |
+| Clock | `clock.rs` | Wall-clock abstraction (injectable) |
 
-## Data Flow: Single Command
+## TUI Modules
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| App | `app.rs` | UI state, key bindings, event dispatch, text scraping, mouse handling, clipboard |
+| UI | `ui/mod.rs` | Layout orchestration (3:2 split), `Stage4Render` → ratatui `Line` conversion |
+| Panes | `ui/panes.rs` | 4 widget renderers: console, telemetry, input, target matrix |
+| Theme | `ui/theme.rs` | 6-color palette (BLACKARCH_VOID) and style helpers |
+
+## TUI Layout
+
+```
+┌──────────────────────────────────────┬──────────────────────────┐
+│                                      │ TACTICAL TELEMETRY       │
+│        LIVE OUTPUT CONSOLE           │ (7 lines fixed)          │
+│            (60% width)              │ IP, DIR, ENGINE, STATUS   │
+│                                      │ + animated spinner        │
+│                                      ├──────────────────────────┤
+│                                      │ DISCOVERED TARGET MATRIX │
+│                                      │ (remaining space)        │
+├──────────────────────────────────────┴──────────────────────────┤
+│ COMMAND INTERACTION ENTRY (3 lines)                              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## Data Flow: Current Implementation
 
 ```
 "scan port 80 on 10.0.0.5"
   │
-  ▼ Stage 1 — Understand
-  AI → { intent: "port_scan", params: { target: "10.0.0.5", ports: "80" }, mode: SingleCommand }
+  ▼ Detector
+  command -v scan → 127 (not found) → classify as RawInput
   │
-  ▼ Stage 2 — Retrieve
-  DDG search → AI → { theory: "...", candidates: [nmap, nc] }
+  ▼ Engine (Phase::Thinking)
+  FailoverClient::complete_validated() → try provider A → OK
+  clean_command("```sh\nnmap -p 80 10.0.0.5\n```") → CommandSpec { tool: "nmap", argv: ["-p", "80", "10.0.0.5"] }
   │
-  ▼ Stage 3 — Plan
-  AI → [ { tool: "nmap", argv: ["-p", "80", "10.0.0.5"] } ]
-  │  (cached by normalized intent+params for future identical requests)
-  ▼ FeedbackLoop
-  which nmap ✓ → run nmap -p 80 10.0.0.5 → exit 0
-  │
-  ▼ Stage 4 — Render
-  AI → Stage4Render { sections: [ Table of open ports ] }
-  │
-  ▼ UI streams Output events + Rendered event + Done
+  ▼ Engine (Phase::Executing)
+  ShellRunner::run_streaming() → live OutputLine events → Done
 ```
 
-## Data Flow: Goal Completion
+## Planned / Not Yet Wired
 
-```
-"enumerate the web server on 10.0.0.5"
-  │
-  ▼ Stage 1 → mode: GoalCompletion, goal_summary: "Enumerate web services on 10.0.0.5"
-  ▼ Stage 2 → candidate commands for web enumeration
-  │
-  ▼ Goal Loop (max 12 steps):
-  │
-  ├─ Plan (next_step) → AI + history → [nmap -sV -p- 10.0.0.5]
-  ├─ FeedbackLoop → run nmap → exit 0
-  ├─ Render → table of open ports
-  ├─ GoalCheck → AI → { achieved: false, hint: "run whatweb on port 80" }
-  │
-  ├─ Plan (next_step) → AI + history + hint → [whatweb 10.0.0.5:80]
-  ├─ FeedbackLoop → run whatweb → exit 0
-  ├─ Render → detected technologies
-  ├─ GoalCheck → AI → { achieved: true }
-  │
-  └─ Done
-```
+These components exist as code in the repository but are not yet integrated into the Engine:
 
-## Execution Feedback Loop
+| Component | Location | Status |
+|-----------|----------|--------|
+| FeedbackLoop | `deathpwn-core/src/exec/feedback.rs` | Fully built: availability check, auto-install, failure classification, argv correction. Not wired into Engine (Engine calls ShellRunner directly). |
+| DuckDuckGo Search | `deathpwn-core/src/search/ddg.rs` | `DuckDuckGoSearch` client works. Not used by Engine. |
+| Goal Completion Loop | Schema in `schema/mod.rs` | `GoalVerdict` type exists. Goal loop state machine not built. |
+| 4-Stage Pipeline | Schema in `schema/mod.rs` | All `Stage1–4` and `RenderBody` types defined. Stage runners not built. |
+| Plan Cache | — | CLI args (`--cache`/`--no-cache`) implemented. In-memory cache not wired. |
 
-Every command runs through `FeedbackLoop::run()`:
+## Execution: ShellRunner
+
+`ShellRunner` maintains a persistent background shell process across commands:
+
+1. Shell process spawned with piped stdin/stdout/stderr
+2. Each command written to stdin between sentinel delimiters
+3. Stdout/stderr read concurrently until sentinels (`==DEATHPWN_STDOUT_DONE==`, `==DEATHPWN_STDERR_DONE==`)
+4. Live streaming: each line forwarded via `mpsc::Sender<OutputLine>` before the command completes
+5. Cancellation: `tokio::select!` checks `CancelToken`; sends SIGTERM to process group, escalates to SIGKILL after 300ms
+
+## Execution: FeedbackLoop (planned)
+
+When wired into Engine, every command will run through `FeedbackLoop::run()`:
 
 ```
 1. Availability: command -v <tool>
    └─ Not found → AI resolves install command → run installer → retry
 2. Execute: ShellRunner spawns subprocess in own process group
 3. Classify exit:
-   ├─ exit 0 → ok, proceed to render
+   ├─ exit 0 → ok, proceed
    ├─ exit ≠0 → AI classifies failure:
    │   ├─ NotFound → install + retry (capped)
    │   ├─ BenignEmpty → report, no retry
    │   ├─ FixableUsage → AI corrects argv → retry (max 2 corrections)
    │   ├─ Transient → retry once
    │   └─ Fatal → report cleanly
-4. Cancel: CancelToken checked via tokio::select! — SIGTERM → 300ms → SIGKILL
+4. Cancel: CancelToken checked via tokio::select!
 ```
 
 ## Provider Failover
@@ -156,33 +171,18 @@ Every AI call uses `FailoverClient::complete_validated()`:
 
 ```
 1. Try Provider A
-2. Validate response → parse against strict JSON schema
-3. If API error OR schema mismatch → immediate failover to Provider B
-4. Both fail → DeathpwnError::Provider
+2. Validate response against the provided clean/parse function
+3. If API error OR validation failure → immediate failover to Provider B
+4. Both fail → errors aggregated and returned
 ```
 
-## Session State
+## Configuration
 
-`SessionState` accumulates across a session:
+See [configuration.md](./configuration.md) for the full environment variable reference. Key additions beyond the provider vars:
 
-- `targets`: Vec of known target IPs/hostnames
-- `hosts`: map of host → (ports, services)
-- `findings`: Vec of discovered findings with severity
-- `command_log`: full history of executed commands
-
-This state is fed back into Stage 1 (Understand) so follow-up commands like "scan those ports" resolve without restating the target.
-
-## Plan Cache
-
-In-memory exact-match cache for Stage 3 plans. Key format:
-
-```
-normalize_intent(intent) + "|" + normalize_params(params)
-```
-
-- Different params (different target IP) never collide
-- Only used in SingleCommand mode — goal loop bypasses cache (always uses `next_step()`)
-- No TTL, lives for the session duration
+- `DEATHPWN_PREFERENCE_FILE` — path to `preference.json` for command overrides
+- `DEATHPWN_DISABLE_CACHE` — disable plan cache (set by `--no-cache` CLI flag)
+- `DEATHPWN_DISABLE_HISTORY` — disable history (set by `--history off` CLI flag)
 
 ## Artifacts
 

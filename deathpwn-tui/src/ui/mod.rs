@@ -1,11 +1,11 @@
 //! Core orchestration layer managing terminal frames, 2:3 screen distributions,
 //! and parsing structures for chronological inline text mapping.
 
+use deathpwn_core::schema::{RenderBody, Stage4Render};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
-use deathpwn_core::schema::{RenderBody, Stage4Render};
 
 use crate::app::App;
 
@@ -13,7 +13,7 @@ pub mod panes;
 pub mod theme;
 
 /// Builds layout constraints and draws nested widgets sequentially.
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let screen_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -22,17 +22,26 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    // Enforce exact layout constraint: Upper large boxes split at a clean 2:3 spatial ratio.
+    // Enforce exact layout constraint: Upper large boxes split at a clean 3:2 spatial ratio.
     let upper_workspace_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Ratio(2, 5), // Left: Tactical Telemetry (40%)
-            Constraint::Ratio(3, 5), // Right: Live Output Console (60%)
+            Constraint::Ratio(3, 5), // Left: Live Output Console (60%)
+            Constraint::Ratio(2, 5), // Right: Tactical Telemetry (40%)
         ])
         .split(screen_chunks[0]);
 
-    panes::render_telemetry(f, upper_workspace_chunks[0], app);
-    panes::render_console(f, upper_workspace_chunks[1], app);
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7), // Tactical Telemetry
+            Constraint::Min(1),    // Discovered Target Matrix
+        ])
+        .split(upper_workspace_chunks[1]);
+
+    panes::render_console(f, upper_workspace_chunks[0], app);
+    panes::render_telemetry(f, right_chunks[0], app);
+    panes::render_relations(f, right_chunks[1], app);
     panes::render_input(f, screen_chunks[1], app);
 }
 
@@ -43,7 +52,9 @@ pub fn stage4_to_lines(render: &Stage4Render) -> Vec<Line<'static>> {
     for section in &render.sections {
         lines.push(Line::from(Span::styled(
             format!("// ANALYSIS SECTION: {}", section.title.to_uppercase()),
-            Style::default().fg(theme::CYBER_CYAN).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::CYBER_CYAN)
+                .add_modifier(Modifier::BOLD),
         )));
 
         match &section.body {
@@ -63,7 +74,9 @@ pub fn stage4_to_lines(render: &Stage4Render) -> Vec<Line<'static>> {
             RenderBody::Table { headers, rows } => {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", headers.join(" │ ")),
-                    Style::default().fg(theme::MATTE_OBSIDIAN).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::MATTE_OBSIDIAN)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 for row in rows {
                     lines.push(Line::from(Span::styled(

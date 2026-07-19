@@ -144,14 +144,9 @@ mod tests {
 
     #[test]
     fn build_body_shapes_openai_chat_messages() {
-        let client = OpenAiClient::new(
-            "https://api.example.com/v1",
-            "sk-test",
-            "gpt-test",
-            "A",
-            30,
-        )
-        .unwrap();
+        let client =
+            OpenAiClient::new("https://api.example.com/v1", "sk-test", "gpt-test", "A", 30)
+                .unwrap();
         let req = ChatRequest {
             system: "sys".to_string(),
             user: "usr".to_string(),
@@ -198,10 +193,7 @@ mod integration {
             temperature: 0.0,
         };
 
-        let out = client
-            .complete(&req)
-            .await
-            .expect("live completion failed");
+        let out = client.complete(&req).await.expect("live completion failed");
         assert!(!out.trim().is_empty(), "expected non-empty content");
     }
 }

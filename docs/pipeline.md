@@ -1,10 +1,26 @@
 # Pipeline
 
+> ⚠️ **Design Reference** — The full 4-stage pipeline described below is the **planned architecture**. The current Engine (`engine.rs`) uses a simplified single-stage flow: `FailoverClient::complete_validated()` → `clean_command()` → `ShellRunner::run_streaming()`.  
+> **Schema types** for all 4 stages are defined in `deathpwn-core/src/schema/mod.rs`. Stage runners are not yet built.
+
 The 4-stage AI pipeline transforms natural language into executed commands with structured output.
+
+## Implementation Status
+
+| Stage | Schema Type | Stage Runner | Wired into Engine |
+|-------|-------------|:---:|:---:|
+| Stage 1 — Understand | `Stage1Understanding` ✅ | ❌ | ❌ |
+| Stage 2 — Retrieve | `Stage2Knowledge` ✅ | ❌ | ❌ |
+| Stage 3 — Plan | `Stage3Plan` ✅ | ❌ | ❌ |
+| Stage 4 — Render | `Stage4Render` ✅ | ❌ | ❌ |
+| FeedbackLoop | `ExecFailureVerdict` ✅ | ✅ (exec/feedback.rs) | ❌ |
+| GoalCompletion | `GoalVerdict` ✅ | ❌ | ❌ |
+| DDG Search | `SearchResult` ✅ | ✅ (search/ddg.rs) | ❌ |
 
 ## Stage 1 — Understand
 
-**File:** `deathpwn-core/src/pipeline/understand.rs`
+**Schema:** `Stage1Understanding` in `deathpwn-core/src/schema/mod.rs`  
+**Stage runner:** Not yet built (would live in `pipeline/understand.rs`)
 
 Takes raw user input + session state and sends to AI. Returns a validated struct:
 
@@ -25,13 +41,15 @@ The session state is critical — it enables follow-ups like "scan those ports" 
 
 ## Stage 2 — Knowledge Retrieval
 
-**File:** `deathpwn-core/src/pipeline/retrieve.rs`
+**Schema:** `Stage2Knowledge` in `deathpwn-core/src/schema/mod.rs`  
+**Search:** DuckDuckGo HTML scraper exists in `deathpwn-core/src/search/ddg.rs` (not yet wired)  
+**Stage runner:** Not yet built (would live in `pipeline/retrieve.rs`)
 
 Converts understanding into executable knowledge via web search:
 
 1. Build a DuckDuckGo search query from intent + params
    - Format: `"{intent} {target} kali OR blackarch pentest command"`
-2. Fetch DDG results (HTML scrape)
+2. Fetch DDG results (HTML scrape via `parse_ddg_html()`)
 3. Feed results (or "use your own knowledge" fallback if empty) to AI
 4. AI produces:
 
@@ -47,7 +65,8 @@ Stage2Knowledge {
 
 ## Stage 3 — Planning
 
-**File:** `deathpwn-core/src/pipeline/plan.rs`
+**Schema:** `Stage3Plan` in `deathpwn-core/src/schema/mod.rs`  
+**Stage runner:** Not yet built (would live in `pipeline/plan.rs`)
 
 Converts understanding + knowledge + session context into a concrete execution plan:
 
@@ -73,17 +92,25 @@ Stage3Plan {
 
 ## Stage 4 — Render
 
-**File:** `deathpwn-core/src/pipeline/render.rs`
+**Schema:** `Stage4Render` in `deathpwn-core/src/schema/mod.rs`  
+**TUI integration:** `ui::stage4_to_lines()` in `deathpwn-tui/src/ui/mod.rs` converts `Stage4Render` into ratatui `Line`s (active)  
+**Stage runner:** Not yet built (would live in `pipeline/render.rs`)
 
 After command execution, AI formats raw stdout/stderr/exit code into structured display:
 
 ```
 Stage4Render {
-  summary: "Found 3 open ports: 22, 80, 443",
   sections: [
-    RenderBody::Table { title: "Open Ports", columns: [...], rows: [...] },
-    RenderBody::KeyValue { title: "Server Info", entries: [...] },
-    RenderBody::Findings { items: [{ severity: High, description: "..." }] },
+    RenderSection {
+      title: "Open Ports",
+      kind: Table,
+      body: Table { headers: ["Port", "Service"], rows: [["22/tcp", "ssh"], ["80/tcp", "http"]] }
+    },
+    RenderSection {
+      title: "Findings",
+      kind: Findings,
+      body: Findings([{ severity: "high", title: "...", detail: "..." }])
+    },
   ]
 }
 ```
@@ -103,8 +130,37 @@ Stage4Render {
 
 | Severity | Color |
 |----------|-------|
-| Critical | Red |
-| High | Light Red |
+| Critical / High | Red (`#FF3333`) |
 | Medium | Yellow |
-| Low | Green |
-| Info | Cyan |
+| Low | Green (`#00FF66`) |
+| Info / default | Cyan (`#00D7FF`) |
+
+## Feedback Loop (built, not yet wired)
+
+**Location:** `deathpwn-core/src/exec/feedback.rs`
+
+When wired into Engine, `FeedbackLoop::run()` will handle every command execution:
+
+1. **Availability check**: `command -v <tool>` — if missing, AI resolves BlackArch install command
+2. **Execute**: ShellRunner with CancellationToken safety
+3. **Classify failure**: On non-zero exit, AI classifies as `NotFound`, `BenignEmpty`, `FixableUsage`, `Transient`, or `Fatal`
+4. **React**:
+   - `NotFound` → auto-install then retry
+   - `FixableUsage` → apply corrected argv then retry (capped at `max_corrections`)
+   - `BenignEmpty` / `Fatal` → stop
+   - `Transient` → retry unchanged
+
+## Goal Completion Loop (schema exists, not yet wired)
+
+**Schema:** `GoalVerdict` in `deathpwn-core/src/schema/mod.rs`
+
+When wired, this loop iterates until the goal is achieved or max steps (12) reached:
+
+```
+Goal Loop:
+  ├─ Plan (next_step) → AI + history → [commands]
+  ├─ FeedbackLoop → execute commands
+  ├─ Render → structured output
+  ├─ GoalCheck → AI → GoalVerdict { achieved, reason, next_step_hint }
+  └─ repeat or Done
+```

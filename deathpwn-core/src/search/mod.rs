@@ -36,7 +36,9 @@ impl FakeSearchProvider {
     }
 
     pub fn empty() -> Self {
-        Self { results: Vec::new() }
+        Self {
+            results: Vec::new(),
+        }
     }
 }
 

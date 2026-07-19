@@ -344,7 +344,8 @@ mod tests {
 
     #[test]
     fn goal_verdict_parses_from_model_json() {
-        let json = r#"{"achieved":false,"reason":"ports still unknown","next_step_hint":"run nmap -sV"}"#;
+        let json =
+            r#"{"achieved":false,"reason":"ports still unknown","next_step_hint":"run nmap -sV"}"#;
         let v: GoalVerdict = serde_json::from_str(json).unwrap();
         assert!(!v.achieved);
         assert_eq!(v.reason, "ports still unknown");

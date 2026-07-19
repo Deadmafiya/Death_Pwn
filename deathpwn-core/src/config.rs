@@ -20,6 +20,7 @@ pub struct Config {
     pub max_corrections: u32,
     pub artifacts_dir: PathBuf,
     pub http_timeout_secs: u64,
+    pub preferences: std::collections::HashMap<String, String>,
 }
 
 impl Config {
@@ -62,6 +63,7 @@ impl Config {
         let http_timeout_secs = parse_or_default(&get, "DEATHPWN_HTTP_TIMEOUT_SECS", 30u64)?;
 
         let artifacts_dir = resolve_artifacts_dir(&get);
+        let preferences = load_preferences(&get)?;
 
         Ok(Config {
             provider_a,
@@ -71,24 +73,82 @@ impl Config {
             max_corrections,
             artifacts_dir,
             http_timeout_secs,
+            preferences,
         })
+    }
+}
+
+/// Resolve the preference.json path and parse it as a HashMap.
+fn load_preferences(
+    get: &impl Fn(&str) -> Option<String>,
+) -> Result<std::collections::HashMap<String, String>> {
+    let path = if let Some(file) = get("DEATHPWN_PREFERENCE_FILE").filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(file);
+        if !p.exists() {
+            return Err(DeathpwnError::Config(format!(
+                "configured DEATHPWN_PREFERENCE_FILE does not exist: {}",
+                p.display()
+            )));
+        }
+        Some(p)
+    } else {
+        let mut resolved = None;
+        if let Some(xdg) = get("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
+            let p = PathBuf::from(xdg).join("deathpwn").join("preference.json");
+            if p.exists() {
+                resolved = Some(p);
+            }
+        }
+        if resolved.is_none() {
+            if let Some(home) = get("HOME").filter(|s| !s.is_empty()) {
+                let p = PathBuf::from(home)
+                    .join(".config")
+                    .join("deathpwn")
+                    .join("preference.json");
+                if p.exists() {
+                    resolved = Some(p);
+                }
+            }
+        }
+        if resolved.is_none() {
+            let p = PathBuf::from("preference.json");
+            if p.exists() {
+                resolved = Some(p);
+            }
+        }
+        resolved
+    };
+
+    if let Some(p) = path {
+        let content = std::fs::read_to_string(&p).map_err(|e| {
+            DeathpwnError::Config(format!(
+                "failed to read preference file {}: {e}",
+                p.display()
+            ))
+        })?;
+        let map: std::collections::HashMap<String, String> = serde_json::from_str(&content)
+            .map_err(|e| {
+                DeathpwnError::Config(format!(
+                    "failed to parse preference file {} as JSON: {e}",
+                    p.display()
+                ))
+            })?;
+        Ok(map)
+    } else {
+        Ok(std::collections::HashMap::new())
     }
 }
 
 /// Parse an optional numeric env var, falling back to `default` when unset/empty.
 /// A present-but-unparseable value is a config error that names the var.
-fn parse_or_default<T>(
-    get: &impl Fn(&str) -> Option<String>,
-    name: &str,
-    default: T,
-) -> Result<T>
+fn parse_or_default<T>(get: &impl Fn(&str) -> Option<String>, name: &str, default: T) -> Result<T>
 where
     T: std::str::FromStr,
 {
     match get(name) {
-        Some(raw) if !raw.is_empty() => raw.parse::<T>().map_err(|_| {
-            DeathpwnError::Config(format!("invalid value for {name}: {raw:?}"))
-        }),
+        Some(raw) if !raw.is_empty() => raw
+            .parse::<T>()
+            .map_err(|_| DeathpwnError::Config(format!("invalid value for {name}: {raw:?}"))),
         _ => Ok(default),
     }
 }
@@ -116,10 +176,16 @@ mod tests {
 
     fn all_required() -> HashMap<String, String> {
         let mut m = HashMap::new();
-        m.insert("DEATHPWN_PROVIDER_A_URL".into(), "https://a.example/v1".into());
+        m.insert(
+            "DEATHPWN_PROVIDER_A_URL".into(),
+            "https://a.example/v1".into(),
+        );
         m.insert("DEATHPWN_PROVIDER_A_KEY".into(), "key-a".into());
         m.insert("DEATHPWN_PROVIDER_A_MODEL".into(), "model-a".into());
-        m.insert("DEATHPWN_PROVIDER_B_URL".into(), "https://b.example/v1".into());
+        m.insert(
+            "DEATHPWN_PROVIDER_B_URL".into(),
+            "https://b.example/v1".into(),
+        );
         m.insert("DEATHPWN_PROVIDER_B_KEY".into(), "key-b".into());
         m.insert("DEATHPWN_PROVIDER_B_MODEL".into(), "model-b".into());
         m
@@ -215,5 +281,54 @@ mod tests {
             }
             other => panic!("expected Config error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn loads_valid_preference_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("preference.json");
+        std::fs::write(&file_path, r#"{"host discovery": "sudo arp-scan --local"}"#).unwrap();
+
+        let mut m = all_required();
+        m.insert(
+            "DEATHPWN_PREFERENCE_FILE".into(),
+            file_path.to_str().unwrap().into(),
+        );
+
+        let cfg = Config::from_lookup(lookup(m)).unwrap();
+        assert_eq!(
+            cfg.preferences.get("host discovery").unwrap(),
+            "sudo arp-scan --local"
+        );
+    }
+
+    #[test]
+    fn error_on_invalid_preference_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("preference.json");
+        std::fs::write(&file_path, "not-json").unwrap();
+
+        let mut m = all_required();
+        m.insert(
+            "DEATHPWN_PREFERENCE_FILE".into(),
+            file_path.to_str().unwrap().into(),
+        );
+
+        let err = Config::from_lookup(lookup(m)).unwrap_err();
+        assert!(err.to_string().contains("failed to parse preference file"));
+    }
+
+    #[test]
+    fn error_on_missing_configured_preference_file() {
+        let mut m = all_required();
+        m.insert(
+            "DEATHPWN_PREFERENCE_FILE".into(),
+            "/nonexistent/path/preference.json".into(),
+        );
+
+        let err = Config::from_lookup(lookup(m)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("configured DEATHPWN_PREFERENCE_FILE does not exist"));
     }
 }

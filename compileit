@@ -1,0 +1,10 @@
+#!/bin/bash
+# Compilation and installation script for deathPWN
+echo "=== Building deathPWN Workspace (Debug & Release) ==="
+cargo build --workspace || exit 1
+cargo build --workspace --release || exit 1
+echo "=== Installing binary to ~/.local/bin/deathPWN ==="
+mkdir -p "$HOME/.local/bin"
+cp target/release/deathPWN "$HOME/.local/bin/deathPWN.tmp"
+mv -f "$HOME/.local/bin/deathPWN.tmp" "$HOME/.local/bin/deathPWN"
+echo "=== Build and installation finished ==="

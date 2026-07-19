@@ -82,14 +82,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_a_ok_returns_validated_value() {
-        let a = Arc::new(FakeAiProvider::new(
-            "A",
-            vec![Ok(r#"{"n":1}"#.to_string())],
-        ));
-        let b = Arc::new(FakeAiProvider::new(
-            "B",
-            vec![Ok(r#"{"n":2}"#.to_string())],
-        ));
+        let a = Arc::new(FakeAiProvider::new("A", vec![Ok(r#"{"n":1}"#.to_string())]));
+        let b = Arc::new(FakeAiProvider::new("B", vec![Ok(r#"{"n":2}"#.to_string())]));
         let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
@@ -107,10 +101,7 @@ mod tests {
             "A",
             vec![Err(crate::providers::ProviderError::Timeout)],
         ));
-        let b = Arc::new(FakeAiProvider::new(
-            "B",
-            vec![Ok(r#"{"n":7}"#.to_string())],
-        ));
+        let b = Arc::new(FakeAiProvider::new("B", vec![Ok(r#"{"n":7}"#.to_string())]));
         let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
@@ -128,10 +119,7 @@ mod tests {
             "A",
             vec![Ok("not valid json".to_string())],
         ));
-        let b = Arc::new(FakeAiProvider::new(
-            "B",
-            vec![Ok(r#"{"n":9}"#.to_string())],
-        ));
+        let b = Arc::new(FakeAiProvider::new("B", vec![Ok(r#"{"n":9}"#.to_string())]));
         let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
@@ -149,10 +137,7 @@ mod tests {
             "A",
             vec![Err(crate::providers::ProviderError::RateLimit)],
         ));
-        let b = Arc::new(FakeAiProvider::new(
-            "B",
-            vec![Ok("garbage".to_string())],
-        ));
+        let b = Arc::new(FakeAiProvider::new("B", vec![Ok("garbage".to_string())]));
         let clock = Arc::new(FakeClock::fixed(0));
         let client = FailoverClient::new(a, b, clock);
 
@@ -163,8 +148,14 @@ mod tests {
 
         match err {
             crate::error::DeathpwnError::Provider(msg) => {
-                assert!(msg.contains("A:"), "aggregated error must name provider A: {msg}");
-                assert!(msg.contains("B:"), "aggregated error must name provider B: {msg}");
+                assert!(
+                    msg.contains("A:"),
+                    "aggregated error must name provider A: {msg}"
+                );
+                assert!(
+                    msg.contains("B:"),
+                    "aggregated error must name provider B: {msg}"
+                );
             }
             other => panic!("expected DeathpwnError::Provider, got {other:?}"),
         }

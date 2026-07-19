@@ -215,7 +215,10 @@ impl<R: CommandRunner> FeedbackLoop<R> {
                     attempts.push(AttemptLog {
                         argv: current.argv.clone(),
                         exit: outcome.exit,
-                        note: format!("fixable_usage: retry {}/{}", corrections, self.max_corrections),
+                        note: format!(
+                            "fixable_usage: retry {}/{}",
+                            corrections, self.max_corrections
+                        ),
                     });
                     current.argv = corrected;
                     continue;
@@ -256,10 +259,9 @@ impl<R: CommandRunner> FeedbackLoop<R> {
         match first {
             Ok(content) => Ok(content),
             Err(err_a) => match &self.ai_b {
-                Some(b) => b
-                    .complete(req)
-                    .await
-                    .map_err(|err_b| DeathpwnError::Provider(format!("A: {err_a:?}; B: {err_b:?}"))),
+                Some(b) => b.complete(req).await.map_err(|err_b| {
+                    DeathpwnError::Provider(format!("A: {err_a:?}; B: {err_b:?}"))
+                }),
                 None => Err(DeathpwnError::Provider(format!("{err_a:?}"))),
             },
         }
@@ -389,10 +391,17 @@ mod tests {
         assert_eq!(runs.len(), 2, "initial run + one corrected retry");
         assert_eq!(
             runs[1].argv,
-            vec!["nmap".to_string(), "-sV".to_string(), "10.0.0.1".to_string()],
+            vec![
+                "nmap".to_string(),
+                "-sV".to_string(),
+                "10.0.0.1".to_string()
+            ],
             "retry uses corrected argv"
         );
-        assert!(out.attempts.iter().any(|a| a.note.contains("fixable_usage")));
+        assert!(out
+            .attempts
+            .iter()
+            .any(|a| a.note.contains("fixable_usage")));
         assert_eq!(out.attempts.last().unwrap().note, "ok");
     }
 
@@ -415,8 +424,16 @@ mod tests {
         };
         let out = fb.run(&spec, CancelToken::new()).await.unwrap();
 
-        assert_eq!(out.outcome.exit, Some(2), "returns the last failing outcome");
-        assert_eq!(runner.run_calls().len(), 3, "initial + 2 corrections, then stop");
+        assert_eq!(
+            out.outcome.exit,
+            Some(2),
+            "returns the last failing outcome"
+        );
+        assert_eq!(
+            runner.run_calls().len(),
+            3,
+            "initial + 2 corrections, then stop"
+        );
         assert_eq!(ai.calls(), 3, "classify each failing run until cap");
         assert!(out.attempts.iter().any(|a| a.note.contains("cap")));
     }
@@ -439,8 +456,15 @@ mod tests {
         let out = fb.run(&spec, CancelToken::new()).await.unwrap();
 
         assert_eq!(out.outcome.exit, Some(0));
-        assert_eq!(ai.calls(), 1, "only the install resolution call, no classify");
-        assert!(out.attempts.iter().any(|a| a.note.contains("installed via")));
+        assert_eq!(
+            ai.calls(),
+            1,
+            "only the install resolution call, no classify"
+        );
+        assert!(out
+            .attempts
+            .iter()
+            .any(|a| a.note.contains("installed via")));
         assert!(runner.shell_calls().iter().any(|s| s.contains("pacman -S")));
     }
 
@@ -515,9 +539,9 @@ mod tests {
         let runner = FakeCommandRunner::new().available("nmap");
         runner.push_run(fail(2, "unrecognized option '--badflag'"));
         runner.push_run(ok("Nmap scan report for 10.0.0.1"));
-        let a = Arc::new(FakeAiProvider::scripted(vec![Err::<String, ProviderError>(
-            ProviderError::RateLimit,
-        )]));
+        let a = Arc::new(FakeAiProvider::scripted(vec![
+            Err::<String, ProviderError>(ProviderError::RateLimit),
+        ]));
         let b = Arc::new(FakeAiProvider::scripted(vec![Ok::<String, ProviderError>(
             fixable_json(),
         )]));
@@ -541,9 +565,9 @@ mod tests {
         // DeathpwnError rather than silently swallowed.
         let runner = FakeCommandRunner::new().available("nmap");
         runner.push_run(fail(2, "boom"));
-        let ai = Arc::new(FakeAiProvider::scripted(vec![Err::<String, ProviderError>(
-            ProviderError::Timeout,
-        )]));
+        let ai = Arc::new(FakeAiProvider::scripted(vec![
+            Err::<String, ProviderError>(ProviderError::Timeout),
+        ]));
 
         let fb = FeedbackLoop::new(runner.clone(), ai.clone(), 2);
         let spec = CommandSpec {

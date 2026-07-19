@@ -52,8 +52,22 @@ pub trait CommandRunner: Send + Sync {
     /// Run `spec` (tool + argv) through the shell, in its own process group.
     async fn run(&self, spec: &CommandSpec, cancel: CancelToken) -> RunOutcome;
 
+    /// Run `spec` (tool + argv) with live line streaming.
+    async fn run_streaming(
+        &self,
+        spec: &CommandSpec,
+        tx: tokio::sync::mpsc::Sender<OutputLine>,
+        cancel: CancelToken,
+    ) -> RunOutcome;
+
     /// Run a raw shell string (used e.g. by the detector's `command -v`).
     async fn run_shell(&self, script: &str, cancel: CancelToken) -> RunOutcome;
+
+    /// Get the current working directory of the runner (if supported).
+    async fn get_cwd(&self) -> Option<std::path::PathBuf>;
+
+    /// Write raw input directly to the stdin of the running shell/process.
+    async fn write_stdin(&self, input: &str) -> std::io::Result<()>;
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -188,6 +202,15 @@ mod test_support {
                 .unwrap_or_else(default_ok)
         }
 
+        async fn run_streaming(
+            &self,
+            spec: &CommandSpec,
+            _tx: tokio::sync::mpsc::Sender<super::OutputLine>,
+            cancel: CancelToken,
+        ) -> RunOutcome {
+            self.run(spec, cancel).await
+        }
+
         async fn run_shell(&self, script: &str, _cancel: CancelToken) -> RunOutcome {
             self.shell_calls.lock().unwrap().push(script.to_string());
             if let Some(c) = self.constant.lock().unwrap().clone() {
@@ -214,6 +237,14 @@ mod test_support {
                 .unwrap()
                 .pop_front()
                 .unwrap_or_else(default_ok)
+        }
+
+        async fn get_cwd(&self) -> Option<std::path::PathBuf> {
+            std::env::current_dir().ok()
+        }
+
+        async fn write_stdin(&self, _input: &str) -> std::io::Result<()> {
+            Ok(())
         }
     }
 }
