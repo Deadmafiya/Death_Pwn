@@ -10,6 +10,7 @@ use ratatui::Frame;
 use crate::app::App;
 
 pub mod filebrowser;
+pub mod highlight;
 pub mod panes;
 pub mod popup;
 pub mod theme;

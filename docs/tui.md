@@ -66,7 +66,7 @@ loop {
 
 **Reload:** The entire engine setup runs inside a retry loop. When `Ctrl+R` is pressed, the current run is torn down, `.env` is re-parsed, providers and engine are rebuilt, and the inner event loop restarts fresh.
 
-## Layout (3 Panes + Right Sidebar)
+## Layout (3 Top Panes + Bottom File Browser Bar)
 
 ```
 ┌──────────────────────────────────────┬──────────────────────────┐
@@ -78,11 +78,11 @@ loop {
 │                                      │  MATRIX                  │
 │                                      │  (Min: remaining space)  │
 ├──────────────────────────────────────┴──────────────────────────┤
-│ COMMAND INTERACTION ENTRY (height: 3)                            │
+│ FILE BROWSER BAR (height: 4, 2-row horizontal scrollable grid)   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-- **Vertical split:** Main workspace (`Min(1)`) + Input bar (`Length(3)`)
+- **Vertical split:** Main workspace (`Min(1)`) + File Browser bar (`Length(4)`)
 - **Main workspace horizontal split:** Console 60% (`Ratio(3,5)`) + Right panel 40% (`Ratio(2,5)`)
 - **Right panel vertical split:** Telemetry (`Length(7)`) + Target Matrix (`Min(1)`)
 
@@ -91,7 +91,7 @@ loop {
 - Interactive terminal layout displaying combined output history and active typing prompt.
 - `Paragraph` widget containing scrollback history + prompt line `> <input>` at the bottom.
 - Active cursor rendered dynamically on the prompt line relative to the current scroll offset.
-- `Stdout` lines → Gray, `Stderr` → Red, `Banner` (command echo) → Cyan Bold.
+- `Stdout` lines → Gray base (smart highlighted), `Stderr` → Red base (smart highlighted), `Banner` (command echo) → Cyan Bold (skips smart highlight).
 - `Stage4Render` output converted to styled lines (see `ui::stage4_to_lines()`).
 - Auto-scrolls (pins view to bottom) when new output arrives or a command is submitted.
 
@@ -126,10 +126,43 @@ Interactive tree of targets discovered via text scraping. Each target shows:
 - **Left-click** on target IP → toggles expand/collapse
 - **Right-click** on any item (IP, port, URL, filepath) → copies to clipboard via OSC 52 escape sequence + fallback chain: `xclip` → `xsel --clipboard` → `wl-copy`
 
-### Command Interaction Entry (bottom, 3 lines)
+### File Browser Bar (bottom, 4 lines)
 
-- Bordered block titled `COMMAND INTERACTION ENTRY`.
-- Left empty/inactive as the interactive terminal prompt is hosted inside the console pane.
+- 2-row horizontal scrollable grid showing all files and directories in the shell's current working directory.
+- Features Nerd Font file/directory icons (`icon_for_entry`) mapped by extension (`.rs`, `.py`, `.sh`, `.json`, `.md`, `.nse`, etc.).
+- **Left-click on directory**: Changes current working directory (`NavigateDir`).
+- **Left-click on file**: Opens the interactive **Popup File Editor** (`OpenFile`).
+
+### Popup File Editor (`ui::popup`)
+
+Overlay modal for viewing and editing files directly inside the TUI:
+- **Title Bar**: Shows file path and `[modified]` indicator when edits are unsaved.
+- **Editing Capabilities**: Standard character insertion, backspace, delete, newline, and arrow key cursor movement.
+- **Undo / Redo System**: Snapshot-based undo/redo stack (`popup.undo_stack` / `popup.redo_stack`) supporting up to 256 state history steps.
+- **Controls**: `Ctrl+S` or `[Save]` button writes to file; `Ctrl+Z` undoes; `Ctrl+Y` redoes; `Esc` or `[Exit]` button closes editor.
+- **Mouse support**: Click on buttons (`[Save]`, `[Exit]`, `[Undo]`, `[Redo]`) or click any line/column in the text area to position the cursor.
+
+## Smart Output Text Highlighting (`ui::highlight`)
+
+Every incoming `EngineEvent::Output` line passes through `ui::highlight::highlight_line(text, base_style)` to apply in-line colorization for key pentesting entities before pushing to the output buffer.
+
+### Pattern Priority & Styling
+
+| Priority | Pattern | Description | Style |
+|:---:|---------|-------------|-------|
+| **1** | `URL_RE` | `http://`, `https://`, `ftp://` URLs | Cyber Cyan Bold Underlined (`#00D7FF`) |
+| **2** | `IPV6_RE` | Full or compressed IPv6 addresses & CIDRs | Cyber Cyan Bold (`#00D7FF`) |
+| **3** | `IPV4_RE` | Dotted quad IPv4 addresses & CIDRs | Cyber Cyan Bold (`#00D7FF`) |
+| **4** | `MAC_RE` | Colon, dash, or dot-separated MAC addresses | Purple Highlight Bold (`#AF5FFF`) |
+| **5** | `PATH_RE` | Absolute, relative, or home file paths (`/`, `./`, `../`, `~/`) | Toxic Acid Green Bold (`#00FF66`) |
+| **6** | `PORT_RE` | Contextual ports (`22/tcp`, `:8080`, `port 443`) | Toxic Acid Green Bold (`#00FF66`) |
+| **7** | `STATUS_GOOD_RE` | Good keywords (`open`, `up`, `success`, `alive`, `running`, `accepted`, `filtered`) | Toxic Acid Green Bold (`#00FF66`) |
+| **7** | `STATUS_BAD_RE` | Bad keywords (`closed`, `down`, `failed`, `error`, `dead`, `stopped`, `refused`, `denied`, `timed out`, `unreachable`) | High Explosive Red Bold (`#FF3333`) |
+| **7** | `STATUS_WARN_RE` | Warning keywords (`warning`, `warn`, `caution`, `deprecated`, `notice`) | Warning Yellow Bold (`#FFD700`) |
+
+### Overlap Resolution
+
+Matches are collected and sorted by starting offset, priority rank (lower numbers win), and match length. When patterns overlap (e.g. an IPv4 or port embedded inside a URL), the higher-priority match consumes the entire range, discarding overlapping sub-matches to guarantee clean, untorn spans. Unmatched line segments inherit the stream's default base style (`base_style`).
 
 ## Key Bindings
 
@@ -141,10 +174,14 @@ Interactive tree of targets discovered via text scraping. Each target shows:
 | `Ctrl+X` | Cancel running command AND clear input, return to fresh prompt |
 | `Ctrl+D` | Quit immediately (even with text in input) |
 | `Ctrl+R` | Reload config (.env re-parsed, providers/engine rebuilt) |
-| `Esc` | Quit (only when input is empty) |
-| `←` / `→` | Move cursor in input |
+| `Ctrl+S` | Save current file (when Popup Editor is open) |
+| `Ctrl+Z` | Undo edit (when Popup Editor is open) |
+| `Ctrl+Y` | Redo edit (when Popup Editor is open) |
+| `Esc` | Close Popup Editor / Quit TUI (when input is empty) |
+| `←` / `→` | Move cursor in input / Popup Editor |
+| `↑` / `↓` | Move cursor up/down (in Popup Editor) |
 | `Home` / `End` | Jump to start/end of input |
-| `PageUp` / `PageDown` | Scroll output by 10 lines |
+| `PageUp` / `PageDown` | Scroll output console by 10 lines |
 | `Backspace` | Delete char before cursor |
 | `Delete` | Delete char at cursor |
 | Printable chars | Insert at cursor position |
@@ -178,26 +215,28 @@ Includes a hand-rolled base64 encoder (no external crate dependency).
 
 | Event | Payload | UI Action |
 |-------|---------|-----------|
-| `Output` | `OutputLine { stream, text }` | Scrape text for IPs/ports/URLs/filepaths; push styled lines to output buffer |
+| `Output` | `OutputLine { stream, text }` | Scrape text for IPs/ports/URLs/filepaths; run through `highlight_line()`; push styled lines to output buffer |
 | `Rendered` | `Stage4Render` | Insert "AI ANALYSIS INGESTED" divider; convert via `stage4_to_lines()`; store in `current_render` |
 | `Error` | `String` | Red bold "error: {msg}" in output |
 | `Progress` | `{ target, step }` | Update `active_scrape_ip`, create `DiscoveredTarget`, update status bar |
 | `PhaseChange` | `Phase` | Update `status.phase` |
 | `Done` | — | Clear running flags, set phase to `Idle` |
-| `Cwd` | `String` | Update `current_dir` in telemetry pane |
+| `Cwd` | `String` | Update `current_dir` in telemetry pane and refresh file bar |
 
 ## Theme (BLACKARCH_VOID)
 
-6-color palette defined in `deathpwn-tui/src/ui/theme.rs`:
+Palette defined in `deathpwn-tui/src/ui/theme.rs`:
 
 | Constant | Hex | Use |
 |----------|-----|-----|
 | `PITCH_BLACK` | `#000000` | All pane backgrounds |
 | `MATTE_OBSIDIAN` | `#262626` | Borders, idle status, table headers |
-| `TOXIC_ACID_GREEN` | `#00FF66` | Spinner, running status, prompt, matrix arrows, low-severity findings |
-| `CYBER_CYAN` | `#00D7FF` | Labels, section titles, analysis headers |
+| `TOXIC_ACID_GREEN` | `#00FF66` | Spinner, running status, prompt, matrix arrows, low-severity findings, path/port highlights |
+| `CYBER_CYAN` | `#00D7FF` | Labels, section titles, analysis headers, IP/URL highlights |
 | `TERMINAL_SILVER` | `#D8D8D8` | Body text, telemetry values |
-| `HIGH_EXPLOSIVE_RED` | `#FF3333` | Critical/high severity findings, errors, stderr |
+| `HIGH_EXPLOSIVE_RED` | `#FF3333` | Critical/high severity findings, errors, stderr, bad status highlights |
+| `PURPLE_HIGHLIGHT` | `#AF5FFF` | MAC address highlights |
+| `WARNING_YELLOW` | `#FFD700` | Warning status highlights, popup unsaved modified tag |
 
 ## App State (`app.rs`)
 
@@ -205,7 +244,7 @@ Includes a hand-rolled base64 encoder (no external crate dependency).
 App {
     input: String,                           // current input buffer
     cursor_pos: usize,                       // cursor position in input
-    output: Vec<Line<'static>>,              // scrollback buffer
+    output: Vec<Line<'static>>,              // scrollback buffer (smart highlighted)
     status: StatusBar,                       // phase, target, steps, provider, spinner
     scroll: u16,                             // PageUp/PageDown scroll offset
     should_quit: bool,                       // exit flag
@@ -215,9 +254,13 @@ App {
     current_render: Option<Stage4Render>,    // last AI-rendered analysis
     targets: Vec<DiscoveredTarget>,          // scraped targets
     active_scrape_ip: Option<String>,        // current IP context
-    clickable_items: Vec<MatrixClickItem>,   // populated each frame for mouse
+    clickable_items: Vec<ClickItem>,         // populated each frame for mouse clicks
+    file_entries: Vec<FileEntry>,            // current directory entries with icons
+    filebar_scroll: u16,                     // horizontal scroll offset for file bar
+    popup: Option<PopupState>,               // active popup file editor state
     local_ip: String,                        // machine's IP
     current_dir: String,                     // shell cwd
     cmd_tx: mpsc::Sender<Job>,               // channel to engine
 }
 ```
+

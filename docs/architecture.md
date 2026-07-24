@@ -87,10 +87,13 @@ deathpwn-tui ───→ deathpwn-core
 
 | Module | Path | Purpose |
 |--------|------|---------|
-| App | `app.rs` | UI state, key bindings, event dispatch, text scraping, mouse handling, clipboard |
-| UI | `ui/mod.rs` | Layout orchestration (3:2 split), `Stage4Render` → ratatui `Line` conversion |
-| Panes | `ui/panes.rs` | 4 widget renderers: console, telemetry, input, target matrix |
-| Theme | `ui/theme.rs` | 6-color palette (BLACKARCH_VOID) and style helpers |
+| App | `app.rs` | UI state, key bindings, event dispatch, text scraping, mouse handling, file bar state, popup editor |
+| UI | `ui/mod.rs` | Layout orchestration (3:2 split + filebar + popup overlay), `Stage4Render` → ratatui `Line` conversion |
+| Panes | `ui/panes.rs` | 4 widget renderers: console (with embedded prompt), telemetry, target matrix, file browser bar |
+| Highlight | `ui/highlight.rs` | Smart output highlighter: regex pattern matcher (`URL`, `IPv6`, `IPv4`, `MAC`, `PATH`, `PORT`, `STATUS`), priority overlap filter, span builder |
+| Filebrowser | `ui/filebrowser.rs` | Directory entry representations, Nerd Font icon mapper (`icon_for_entry`), click actions (`NavigateDir`, `OpenFile`, `ToggleTarget`, `CopyToClipboard`) |
+| Popup | `ui/popup.rs` | Modal popup file editor state (`PopupState`), undo/redo stack (256 levels), scroll clamping, rendering, mouse hit testing |
+| Theme | `ui/theme.rs` | Color palette (BLACKARCH_VOID: Obsidian, Toxic Green, Cyber Cyan, Explosive Red, Purple, Yellow) and style helpers |
 
 ## TUI Layout
 
@@ -104,7 +107,7 @@ deathpwn-tui ───→ deathpwn-core
 │                                      │ DISCOVERED TARGET MATRIX │
 │                                      │ (remaining space)        │
 ├──────────────────────────────────────┴──────────────────────────┤
-│ COMMAND INTERACTION ENTRY (3 lines)                              │
+│ FILE BROWSER BAR (height: 4, 2-row horizontal scrollable grid)   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -121,7 +124,11 @@ deathpwn-tui ───→ deathpwn-core
   clean_command("```sh\nnmap -p 80 10.0.0.5\n```") → CommandSpec { tool: "nmap", argv: ["-p", "80", "10.0.0.5"] }
   │
   ▼ Engine (Phase::Executing)
-  ShellRunner::run_streaming() → live OutputLine events → Done
+  ShellRunner::run_streaming() → live OutputLine events
+  │
+  ▼ App::on_event()
+  scrape_text() → extract IPs/ports/URLs/paths → Target Matrix
+  ui::highlight::highlight_line(text, base_style) → styled spans → output buffer → Redraw
 ```
 
 ## Planned / Not Yet Wired

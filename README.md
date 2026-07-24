@@ -43,7 +43,9 @@ Options:
 - **NL → commands**: Type natural language, get pentesting tool invocations via AI resolution
 - **Command or raw**: Step-0 detector classifies input as a direct shell command or NL — runs direct commands immediately without AI
 - **Dual-provider failover**: Two AI providers (A/B) with automatic fallback if the primary fails
-- **TUI**: ratatui terminal with scrollable output, telemetry pane, interactive Discovered Target Matrix, and mouse-driven clipboard copy
+- **TUI**: ratatui terminal with scrollable console output, telemetry pane, interactive Discovered Target Matrix, horizontal file browser bar, and popup file editor
+- **Smart Text Highlighting**: Real-time regex-based output colorization for IPs, MACs, URLs, filepaths, ports, and status keywords
+- **File Browser & Editor**: Interactive 2-row scrollable directory bar with file icons and built-in modal file editor (with 256-level undo/redo)
 - **Text scraping**: IPs, ports, URLs, and filepaths auto-scraped from all output and organized per-target
 - **User command preferences**: `preference.json` maps tasks to preferred tools (injected into AI prompt)
 
@@ -65,7 +67,9 @@ Options:
 
 - **Simplified engine flow**: Input → Detector → DirectCommand (run immediately) or NL → AI resolution → Execute. Schema types for the full 4-stage pipeline are defined but stage runners are not yet wired.
 - **Persistent shell session**: One shell process stays alive across commands, preserving cwd, env, and shell state
+- **Smart Highlighting & Formatting**: Output lines scanned via `ui::highlight` for network artifacts, paths, and status keywords with priority overlap resolution
 - **Discovered Target Matrix**: Right-click any IP, port, URL, or filepath to copy to clipboard (OSC 52 + xclip/xsel/wl-copy fallback)
+- **File Bar & Popup Editor**: Click files in the bottom bar to open an interactive editor modal with line numbers, full cursor navigation, and undo/redo
 - **Artifacts**: Every command's raw output saved to `$XDG_DATA_HOME/deathpwn/`
 - **CancelToken**: Ctrl+C sends SIGTERM to process group with cooperative cancellation
 - **Preference file**: `preference.json` (auto-discovered at `$XDG_CONFIG_HOME/deathpwn/preference.json`, `~/.config/deathpwn/preference.json`, or `./preference.json`) maps task descriptions to preferred command overrides
@@ -75,4 +79,5 @@ Options:
 - [`architecture.md`](./docs/architecture.md) — full architecture and data flow
 - [`pipeline.md`](./docs/pipeline.md) — 4-stage AI pipeline details (design reference)
 - [`configuration.md`](./docs/configuration.md) — environment variable reference
-- [`tui.md`](./docs/tui.md) — TUI layout, key bindings, mouse interactions
+- [`tui.md`](./docs/tui.md) — TUI layout, text highlighting, file editor, key bindings, mouse interactions
+

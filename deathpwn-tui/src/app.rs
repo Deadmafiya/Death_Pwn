@@ -288,7 +288,7 @@ impl App {
         match event {
             EngineEvent::Output(line) => {
                 self.scrape_text(&line.text);
-                let style = match line.stream {
+                let base_style = match line.stream {
                     Stream::Stdout => Style::default().fg(Color::Gray),
                     Stream::Stderr => Style::default().fg(Color::Red),
                     Stream::Banner => Style::default()
@@ -296,8 +296,13 @@ impl App {
                         .add_modifier(Modifier::BOLD),
                 };
                 for text in line.text.lines() {
-                    self.output
-                        .push(Line::from(Span::styled(text.to_string(), style)));
+                    if matches!(line.stream, Stream::Banner) {
+                        self.output
+                            .push(Line::from(Span::styled(text.to_string(), base_style)));
+                    } else {
+                        self.output
+                            .push(ui::highlight::highlight_line(text, base_style));
+                    }
                 }
                 self.scroll = u16::MAX;
             }

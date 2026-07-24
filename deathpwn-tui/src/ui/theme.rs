@@ -10,6 +10,8 @@ pub const TOXIC_ACID_GREEN: Color = Color::Rgb(0, 255, 102); // #00FF66
 pub const CYBER_CYAN: Color = Color::Rgb(0, 215, 255); // #00D7FF
 pub const TERMINAL_SILVER: Color = Color::Rgb(216, 216, 216); // #D8D8D8
 pub const HIGH_EXPLOSIVE_RED: Color = Color::Rgb(255, 51, 51); // #FF3333
+pub const PURPLE_HIGHLIGHT: Color = Color::Rgb(175, 95, 255); // #AF5FFF
+pub const WARNING_YELLOW: Color = Color::Rgb(255, 215, 0); // #FFD700
 
 /// Returns the operational terminal theme settings for window frameworks.
 pub fn border_style() -> Style {

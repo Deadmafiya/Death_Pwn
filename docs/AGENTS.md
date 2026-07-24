@@ -15,7 +15,7 @@ See @README.md for project overview. This is a Rust workspace with two crates: `
 
 **Workspace structure:**
 - `deathpwn-core` — All business logic. Modules: `cancel`, `clock`, `config`, `detector`, `engine`, `error`, `exec` (runner, feedback, installer), `providers` (ai, openai, failover), `schema` (all types in mod.rs), `search` (ddg, mod)
-- `deathpwn-tui` — ratatui TUI frontend. Files: `main.rs` (event loop, reload, crossterm thread), `app.rs` (App state, key bindings, event handling, text scraping, mouse handling, clipboard), `ui/mod.rs` (layout orchestration + Stage4Render→Lines), `ui/panes.rs` (4 widget renderers), `ui/theme.rs` (6-color palette)
+- `deathpwn-tui` — ratatui TUI frontend. Files: `main.rs` (event loop, reload, crossterm thread), `app.rs` (App state, key bindings, event handling, text scraping, mouse handling, file bar state, popup editor), `ui/mod.rs` (layout orchestration + Stage4Render→Lines), `ui/panes.rs` (widget renderers for console, telemetry, target matrix, filebar), `ui/highlight.rs` (smart regex output highlighting), `ui/filebrowser.rs` (Nerd font icon mapping, file entry types, click actions), `ui/popup.rs` (modal popup file editor with undo/redo stack), `ui/theme.rs` (color palette and styles)
 
 **Engine flow (simplified — current implementation):**
 ```
